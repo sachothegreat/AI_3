@@ -1,214 +1,266 @@
-import tensorflow as tf
-from tensorflow.keras.layers import Conv2D, UpSampling2D, Input, BatchNormalization, Add, LeakyReLU, Dropout
-from tensorflow.keras.models import Model
-from tensorflow.keras.applications import VGG19
-import numpy as np
+import torch
+from torch import nn
+from torchvision.models import vgg19
+from torch.nn.utils import spectral_norm
+import torch.nn.functional as F
+from dataset import load_image_pairs  # Import from your dataset.py file
+from utils import save_model, display_training_progress, EarlyStopping  # Import from your utils.py file
 from PIL import Image
 import os
 
-# Define the residual block for ESRGAN with Dropout for regularization
-def residual_block(input_layer, filters=64):
-    x = Conv2D(filters, (3, 3), padding='same')(input_layer)
-    x = BatchNormalization()(x)
-    x = LeakyReLU(alpha=0.2)(x)
-    x = Dropout(0.3)(x)  # Dropout to prevent overfitting
-    x = Conv2D(filters, (3, 3), padding='same')(x)
-    x = BatchNormalization()(x)
-    return Add()([input_layer, x])
+# Exponential Moving Average (EMA) class
+class EMA():
+    def __init__(self, model, decay):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
 
-# Build the ESRGAN-like generator model with residual blocks
-def build_generator():
-    input_img = Input(shape=(128, 128, 3))  # Low-res image input
+    def register(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
 
-    # First convolution block
-    x = Conv2D(64, (3, 3), padding='same', activation='relu')(input_img)
-    x = BatchNormalization()(x)
+    def update(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
+                self.shadow[name] = new_average.clone()
 
-    # Add residual blocks
-    for _ in range(16):  # 16 residual blocks for more feature learning
-        x = residual_block(x)
+    def apply_shadow(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                self.backup[name] = param.data
+                param.data = self.shadow[name]
 
-    # First upsampling block
-    x = UpSampling2D(size=(2, 2))(x)
-    x = Conv2D(64, (3, 3), padding='same', activation='relu')(x)
-    x = BatchNormalization()(x)
+    def restore(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
 
-    # Second upsampling block
-    x = UpSampling2D(size=(2, 2))(x)
-    x = Conv2D(64, (3, 3), padding='same', activation='relu')(x)
-    x = BatchNormalization()(x)
+# Generator model (ESRGAN-like)
+class Generator(nn.Module):
+    def __init__(self, num_residual_blocks=16):
+        super(Generator, self).__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=9, stride=1, padding=4)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.leaky_relu = nn.LeakyReLU(0.2)
 
-    # Final convolutional layer to output high-resolution image
-    output_img = Conv2D(3, (3, 3), padding='same', activation='sigmoid')(x)
+        # Residual blocks
+        self.residual_blocks = nn.Sequential(
+            *[ResidualBlock(64) for _ in range(num_residual_blocks)]
+        )
 
-    return Model(inputs=input_img, outputs=output_img)
+        # Upsampling layers
+        self.upsample1 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.upsample2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
 
-# Build the discriminator to evaluate whether the generated images are realistic
-def build_discriminator():
-    input_img = Input(shape=(512, 512, 3))  # High-res image input
+        # Final output layer
+        self.conv2 = nn.Conv2d(64, 3, kernel_size=9, stride=1, padding=4)
 
-    # Convolutional block
-    x = Conv2D(64, (3, 3), padding='same', strides=2)(input_img)
-    x = LeakyReLU(alpha=0.2)(x)
-    x = BatchNormalization()(x)
+    def forward(self, x):
+        x = self.leaky_relu(self.bn1(self.conv1(x)))
+        x = self.residual_blocks(x)
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        x = self.leaky_relu(self.upsample1(x))
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        x = torch.sigmoid(self.conv2(x))
+        return x
 
-    # Add more convolutional layers
-    for _ in range(4):
-        x = Conv2D(64, (3, 3), padding='same', strides=2)(x)
-        x = LeakyReLU(alpha=0.2)(x)
-        x = BatchNormalization()(x)
+# Residual Block for Generator
+class ResidualBlock(nn.Module):
+    def __init__(self, filters=64):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(filters)
+        self.leaky_relu = nn.LeakyReLU(0.2)
+        self.dropout = nn.Dropout(0.3)
+        self.conv2 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(filters)
 
-    # Final output layer for binary classification (real or fake)
-    output = Conv2D(1, (3, 3), padding='same', activation='sigmoid')(x)
+    def forward(self, x):
+        residual = x
+        x = self.leaky_relu(self.bn1(self.conv1(x)))
+        x = self.dropout(x)
+        x = self.bn2(self.conv2(x))
+        return x + residual
 
-    return Model(inputs=input_img, outputs=output)
+# UNet-based Discriminator with Spectral Normalization (SN)
+class UNetDiscriminatorSN(nn.Module):
+    def __init__(self, num_in_ch, num_feat=64, skip_connection=True):
+        super().__init__()
+        norm = spectral_norm
+        self.skip_connection = skip_connection
+        self.conv0 = nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1)
 
-# Build the VGG model for perceptual loss calculation
-def build_vgg_for_loss():
-    vgg = VGG19(weights='imagenet', include_top=False, input_shape=(512, 512, 3))
-    model = Model(inputs=vgg.input, outputs=vgg.get_layer('block5_conv4').output)
-    model.trainable = False  # Freeze the VGG model for feature extraction
-    return model
+        # downsample
+        self.conv1 = norm(nn.Conv2d(num_feat, num_feat * 2, 4, 2, 1, bias=False))
+        self.conv2 = norm(nn.Conv2d(num_feat * 2, num_feat * 4, 4, 2, 1, bias=False))
+        self.conv3 = norm(nn.Conv2d(num_feat * 4, num_feat * 8, 4, 2, 1, bias=False))
 
-# Perceptual loss function using VGG
-@tf.function
+        # upsample
+        self.conv4 = norm(nn.Conv2d(num_feat * 8, num_feat * 4, 3, 1, 1, bias=False))
+        self.conv5 = norm(nn.Conv2d(num_feat * 4, num_feat * 2, 3, 1, 1, bias=False))
+        self.conv6 = norm(nn.Conv2d(num_feat * 2, num_feat, 3, 1, 1, bias=False))
+
+        # extra convolutions
+        self.conv7 = norm(nn.Conv2d(num_feat, num_feat, 3, 1, 1, bias=False))
+        self.conv8 = norm(nn.Conv2d(num_feat, num_feat, 3, 1, 1, bias=False))
+        self.conv9 = nn.Conv2d(num_feat, 1, 3, 1, 1)
+
+    def forward(self, x):
+        # downsample
+        x0 = F.leaky_relu(self.conv0(x), negative_slope=0.2, inplace=True)
+        x1 = F.leaky_relu(self.conv1(x0), negative_slope=0.2, inplace=True)
+        x2 = F.leaky_relu(self.conv2(x1), negative_slope=0.2, inplace=True)
+        x3 = F.leaky_relu(self.conv3(x2), negative_slope=0.2, inplace=True)
+
+        # upsample
+        x3 = F.interpolate(x3, scale_factor=2, mode='bilinear', align_corners=False)
+        x4 = F.leaky_relu(self.conv4(x3), negative_slope=0.2, inplace=True)
+
+        if self.skip_connection:
+            x4 = x4 + x2
+        x4 = F.interpolate(x4, scale_factor=2, mode='bilinear', align_corners=False)
+        x5 = F.leaky_relu(self.conv5(x4), negative_slope=0.2, inplace=True)
+
+        if self.skip_connection:
+            x5 = x5 + x1
+        x5 = F.interpolate(x5, scale_factor=2, mode='bilinear', align_corners=False)
+        x6 = F.leaky_relu(self.conv6(x5), negative_slope=0.2, inplace=True)
+
+        if self.skip_connection:
+            x6 = x6 + x0
+
+        # extra convolutions
+        out = F.leaky_relu(self.conv7(x6), negative_slope=0.2, inplace=True)
+        out = F.leaky_relu(self.conv8(out), negative_slope=0.2, inplace=True)
+        out = self.conv9(out)
+
+        return out
+
+# Build the VGG model for perceptual loss calculation with multiple feature maps
+class VGGFeatureExtractor(nn.Module):
+    def __init__(self):
+        super(VGGFeatureExtractor, self).__init__()
+        vgg = vgg19(weights='IMAGENET1K_V1')  # Updated to use the correct weight format
+        feature_layers = ['features.0', 'features.5', 'features.10', 'features.19', 'features.28']
+        self.features = nn.ModuleList([vgg.features[int(layer.split('.')[1])] for layer in feature_layers])
+
+    def forward(self, x):
+        outputs = []
+        for layer in self.features:
+            x = layer(x)
+            outputs.append(x)
+        return outputs
+
+# Perceptual loss function using VGG with weights {0.1, 0.1, 1, 1, 1}
 def compute_perceptual_loss(vgg, y_true, y_pred):
-    true_features = vgg(y_true)  # Ensure y_true is tensor
-    pred_features = vgg(y_pred)  # Ensure y_pred is tensor
-    return tf.reduce_mean(tf.square(true_features - pred_features))
+    feature_weights = [0.1, 0.1, 1, 1, 1]
+    loss = 0.0
 
-# Training step wrapped in @tf.function to optimize memory usage
-@tf.function
-def train_step(generator, discriminator, vgg, low_res_image, high_res_image, real_labels, fake_labels, gen_optimizer, disc_optimizer):
-    with tf.GradientTape(persistent=True) as tape:
-        # Generate high-resolution images using the generator
-        generated_image = generator(low_res_image)
+    y_true_features = vgg(y_true)
+    y_pred_features = vgg(y_pred)
 
-        # Discriminator predictions
-        real_preds = discriminator(high_res_image)
-        fake_preds = discriminator(generated_image)
+    for i, weight in enumerate(feature_weights):
+        loss += weight * nn.functional.mse_loss(y_pred_features[i], y_true_features[i])
 
-        # Calculate losses
-        mse_loss = tf.reduce_mean(tf.square(high_res_image - generated_image))  # Pixel-wise MSE loss
-        perceptual_loss_value = compute_perceptual_loss(vgg, high_res_image, generated_image)  # Perceptual loss
-        adversarial_loss_value = tf.reduce_mean(fake_preds - real_preds)  # Adversarial loss
+    return loss
 
-        combined_loss = mse_loss + perceptual_loss_value + adversarial_loss_value
+# Training step with generator and discriminator
+def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen_optimizer, disc_optimizer, ema):
+    generator.train()
+    discriminator.train()
 
-        # Discriminator loss (binary cross-entropy)
-        real_loss = tf.keras.losses.binary_crossentropy(real_labels, real_preds)
-        fake_loss = tf.keras.losses.binary_crossentropy(fake_labels, fake_preds)
-        disc_loss = real_loss + fake_loss
+    # Generator forward pass
+    generated_image = generator(low_res_image)
 
-    # Apply gradients to update generator and discriminator
-    gen_gradients = tape.gradient(combined_loss, generator.trainable_variables)
-    disc_gradients = tape.gradient(disc_loss, discriminator.trainable_variables)
+    # Discriminator forward pass
+    real_output = discriminator(high_res_image)
+    fake_output = discriminator(generated_image.detach())
 
-    gen_optimizer.apply_gradients(zip(gen_gradients, generator.trainable_variables))
-    disc_optimizer.apply_gradients(zip(disc_gradients, discriminator.trainable_variables))
+    # Compute perceptual loss
+    perceptual_loss = compute_perceptual_loss(vgg, high_res_image, generated_image)
 
-    return combined_loss, generated_image
+    # Adversarial loss (BCE loss)
+    adversarial_loss_real = nn.BCEWithLogitsLoss()(real_output, torch.ones_like(real_output))
+    adversarial_loss_fake = nn.BCEWithLogitsLoss()(fake_output, torch.zeros_like(fake_output))
+    adversarial_loss = (adversarial_loss_real + adversarial_loss_fake) / 2
 
-# Function to load and resize images
-def load_image(image_path, target_size=None):
-    if not os.path.exists(image_path):
-        print(f"Error: The file '{image_path}' does not exist.")
-        return None
-    img = Image.open(image_path).convert('RGB')  # Convert to RGB mode to ensure 3 channels
-    if target_size:
-        img = img.resize(target_size, Image.BICUBIC)  # Resize using bicubic interpolation
-    img = np.array(img) / 255.0  # Normalize image to [0, 1]
-    return tf.convert_to_tensor(img, dtype=tf.float32)  # Convert image to tensor
+    # Total generator loss
+    total_loss = perceptual_loss + adversarial_loss
 
-# Function to load all image pairs (low and high res) for training
-def load_image_pairs(low_res_dir, high_res_dir, num_images):
-    low_res_images = []
-    high_res_images = []
+    # Backpropagation for generator
+    gen_optimizer.zero_grad()
+    total_loss.backward()
+    gen_optimizer.step()
 
-    for i in range(num_images):
-        low_res_path = os.path.join(low_res_dir, f'{i}.png')
-        high_res_path = os.path.join(high_res_dir, f'{i}.png')
+    # EMA update
+    ema.update()
 
-        low_res_image = load_image(low_res_path, target_size=(128, 128))
-        high_res_image = load_image(high_res_path, target_size=(512, 512))
+    return total_loss.item(), generated_image
 
-        if low_res_image is not None and high_res_image is not None:
-            low_res_images.append(low_res_image)
-            high_res_images.append(high_res_image)
-        else:
-            print(f"Skipping pair: {i}.png")
-
-    return tf.stack(low_res_images), tf.stack(high_res_images)
-
-# Main training function with early stopping and checkpoints
+# Main training function with EMA, Spectral Normalization, and saving generated images
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
-        generator = build_generator()
-        discriminator = build_discriminator()
-        vgg = build_vgg_for_loss()
+        generator = Generator()
+        discriminator = UNetDiscriminatorSN(num_in_ch=3)
+        ema_generator = Generator()  # EMA model for generator
+        vgg = VGGFeatureExtractor()
 
         # Optimizers for generator and discriminator
-        gen_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-5)
-        disc_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-5)
+        gen_optimizer = torch.optim.Adam(generator.parameters(), lr=2e-4, betas=(0.9, 0.99))
+        disc_optimizer = torch.optim.Adam(discriminator.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
-        # Directories for low-res and high-res images
-        low_res_dir = 'low_res'  # Directory containing low-res images
-        high_res_dir = 'high_res'  # Directory containing high-res images
+        # EMA for the generator
+        ema = EMA(generator, decay=0.999)
+        ema.register()
 
-        # Load all low-res and high-res image pairs (685 images)
-        print("Loading image pairs for training...")
-        low_res_images, high_res_images = load_image_pairs(low_res_dir, high_res_dir, num_images=685)
+        # Load your dataset here (same as before)
+        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=685)
 
-        # Get the output shape of the discriminator to create correct label sizes
-        disc_output_shape = discriminator.output_shape[1:4]  # Get the spatial dimensions of the discriminator's output
+        # Ensure 'uploads' directory exists
+        os.makedirs('uploads', exist_ok=True)
 
-        # Labels for real and fake images
-        real_labels = tf.ones((1, *disc_output_shape))  # Create labels that match discriminator output
-        fake_labels = tf.zeros((1, *disc_output_shape))
+        # Ensure 'checkpoints' directory exists
+        os.makedirs('checkpoints', exist_ok=True)
 
-        previous_loss = float('inf')  # Initialize previous loss for early stopping
-        early_stopping_threshold = 1e-4  # Threshold to trigger early stopping
+        # Training loop for 500 epochs
+        for epoch in range(500):
+            for i, (low_res_image, high_res_image) in enumerate(zip(low_res_images, high_res_images)):
+                low_res_image = torch.unsqueeze(low_res_image, 0)  # Add batch dimension
+                high_res_image = torch.unsqueeze(high_res_image, 0)
 
-        # Train the model on this set of image pairs (for 500 epochs)
-        for epoch in range(500):  # Train for 500 epochs
-            # Create a directory for each epoch to store generated images
-            os.makedirs(f"uploads/epoch_{epoch+1}", exist_ok=True)
+                # Train the discriminator and generator
+                combined_loss, generated_image = train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen_optimizer, disc_optimizer, ema)
 
-            for i in range(len(low_res_images)):
-                low_res_image = tf.expand_dims(low_res_images[i], axis=0)  # Expand dimension for a single image
-                high_res_image = tf.expand_dims(high_res_images[i], axis=0)
+                print(f"Epoch {epoch + 1}, Image {i + 1}/{len(low_res_images)} - Loss: {combined_loss:.6f}")
 
-                # Perform a training step
-                combined_loss, generated_image = train_step(generator, discriminator, vgg, low_res_image, high_res_image, real_labels, fake_labels, gen_optimizer, disc_optimizer)
+                # Save the generated image to the 'uploads' folder after processing each image
+                generated_image_np = generated_image.squeeze(0).detach().cpu().numpy().transpose(1, 2, 0) * 255
+                generated_image_np = generated_image_np.clip(0, 255)  # Ensure pixel values are in the right range
+                generated_image_pil = Image.fromarray(generated_image_np.astype('uint8'))
+                generated_image_pil.save(f"uploads/generated_image_epoch_{epoch + 1}_image_{i + 1}.jpg")
 
-                print(f"Epoch {epoch + 1}/500, Image {i + 1}/685 - Combined Loss: {combined_loss:.6f}")
+                # Update EMA for the generator
+                ema.update()
 
-                # Convert and save the generated image (outside @tf.function)
-                generated_image_np = generated_image.numpy()  # Convert to NumPy array
-                generated_image_np = tf.squeeze(generated_image_np) * 255.0  # Scale back to [0, 255]
-                generated_image_np = tf.clip_by_value(generated_image_np, 0, 255).numpy().astype(np.uint8)
-                result_img = Image.fromarray(generated_image_np)
-                result_img.save(f"uploads/epoch_{epoch+1}/generated_image_{i+1}.jpg")
+            # Save checkpoints
+            torch.save(generator.state_dict(), f'checkpoints/generator_epoch_{epoch + 1}.pth')
+            torch.save(discriminator.state_dict(), f'checkpoints/discriminator_epoch_{epoch + 1}.pth')
 
-            # Save checkpoints for both generator and discriminator
-            generator.save(f'checkpoints/epoch_{epoch+1}_generator.h5')
-            discriminator.save(f'checkpoints/epoch_{epoch+1}_discriminator.h5')
-
-            # Early stopping based on the combined loss
-            if epoch > 10 and abs(previous_loss - combined_loss) < early_stopping_threshold:
-                print(f"Early stopping triggered at epoch {epoch + 1}")
-                break
-
-            previous_loss = combined_loss  # Update the previous loss
-
-        # Final save for the generator model
-        generator.save('esrgan_generator.h5')
-        print("Model training complete and saved as 'esrgan_generator.h5'")
+        # Apply EMA weights for the final generator model
+        ema.apply_shadow()
+        torch.save(generator.state_dict(), 'esrgan_final.pth')
 
     except Exception as e:
-        print(f"Error during image processing or training: {str(e)}")
+        print(f"Error during training: {str(e)}")
 
-# Call the function to train and save the model
+# Call the training function
 if __name__ == "__main__":
     train_model()

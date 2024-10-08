@@ -1,19 +1,20 @@
+import torch
+from torchvision.transforms import ToTensor, ToPILImage
 from flask import Flask, request, jsonify, send_file, render_template
-import tensorflow as tf
-import numpy as np
 from PIL import Image
 import io
-import cv2
 import os
 
-# Load the ESRGAN generator model
-model = tf.keras.models.load_model('esrgan_generator.h5', custom_objects={'mse': tf.keras.losses.MeanSquaredError()})
-print("ESRGAN model loaded successfully")
+# Load the ESRGAN PyTorch generator model
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = torch.load('esrgan_generator.pth', map_location=device)
+model.eval()  # Set the model to evaluation mode
+print("ESRGAN PyTorch model loaded successfully")
 
 app = Flask(__name__)
 
 # Allowed file types
-ALLOWED_EXTENSIONS = {'mp4', 'jpg', 'jpeg', 'png'}
+ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png'}
 
 # Helper function to check allowed file types
 def allowed_file(filename):
@@ -38,35 +39,31 @@ def upload_file():
         return jsonify({'error': 'No selected file'}), 400
 
     if not allowed_file(file.filename):
-        return jsonify({'error': 'File type not allowed. Only .mp4, .jpg, .jpeg, and .png files are accepted.'}), 400
+        return jsonify({'error': 'File type not allowed. Only .jpg, .jpeg, and .png files are accepted.'}), 400
 
     # Step 3: Process images (JPG, PNG)
     if file.filename.rsplit('.', 1)[1].lower() in {'jpg', 'jpeg', 'png'}:
         try:
-            img = Image.open(io.BytesIO(file.read()))
+            img = Image.open(io.BytesIO(file.read())).convert('RGB')
 
             # Step 4: Preprocess the image (Resize to 128x128 and normalize)
-            img = np.array(img)
-            print(f"Original Image Shape: {img.shape}, Data Type: {img.dtype}, Min-Max: {img.min()}-{img.max()}")
+            print(f"Original Image Shape: {img.size}")
 
-            img_resized = cv2.resize(img, (128, 128))  # Resize image to fit model input
-            print(f"Resized Image Shape: {img_resized.shape}, Min-Max: {img_resized.min()}-{img_resized.max()}")
-
-            img_array = np.array(img_resized) / 255.0  # Normalize to [0, 1]
-            img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
-            print(f"Normalized Image Shape: {img_array.shape}, Min-Max: {img_array.min()}-{img_array.max()}")
+            # Convert image to tensor, resize to 128x128
+            img_tensor = ToTensor()(img).unsqueeze(0).to(device)  # Add batch dimension and move to device
+            print(f"Image Tensor Shape: {img_tensor.shape}")
 
             # Step 5: Perform super-resolution using the ESRGAN model
-            high_res_img = model.predict(img_array)
-            print(f"Model Output Shape: {high_res_img.shape}, Min-Max: {high_res_img.min()}-{high_res_img.max()}")
+            with torch.no_grad():  # Disable gradient calculation for inference
+                high_res_tensor = model(img_tensor)
 
-            # Step 6: Post-process the result
-            high_res_img = np.squeeze(high_res_img) * 255.0
-            high_res_img = np.clip(high_res_img, 0, 255).astype(np.uint8)
-            print(f"Post-Processed Image Shape: {high_res_img.shape}, Min-Max: {high_res_img.min()}-{high_res_img.max()}")
+            print(f"Model Output Tensor Shape: {high_res_tensor.shape}")
 
-            # Step 7: Convert the result to a PIL image and return to the user
-            result_img = Image.fromarray(high_res_img)
+            # Step 6: Post-process the result (Convert tensor to image)
+            high_res_tensor = high_res_tensor.squeeze(0).clamp(0, 1)  # Remove batch dimension and clamp to [0, 1]
+            result_img = ToPILImage()(high_res_tensor.cpu())  # Convert back to PIL image
+
+            # Step 7: Send the result image to the user
             img_io = io.BytesIO()
             result_img.save(img_io, 'JPEG')
             img_io.seek(0)
