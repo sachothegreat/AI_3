@@ -3,8 +3,8 @@ from torch import nn
 from torchvision.models import vgg19
 from torch.nn.utils import spectral_norm
 import torch.nn.functional as F
-from dataset import load_image_pairs  # Import from your dataset.py file
-from utils import save_model, display_training_progress, EarlyStopping  # Import from your utils.py file
+from dataset import load_image_pairs  # Ensure this is correctly imported from your dataset.py
+from utils import save_model, display_training_progress, EarlyStopping  # Import from utils.py
 from PIL import Image
 import os
 
@@ -17,11 +17,13 @@ class EMA():
         self.backup = {}
 
     def register(self):
+        """Register the initial parameters for the EMA model"""
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 self.shadow[name] = param.data.clone()
 
     def update(self):
+        """Update the EMA model with new averaged weights"""
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 assert name in self.shadow
@@ -29,6 +31,7 @@ class EMA():
                 self.shadow[name] = new_average.clone()
 
     def apply_shadow(self):
+        """Apply the EMA weights to the model for evaluation"""
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 assert name in self.shadow
@@ -36,6 +39,7 @@ class EMA():
                 param.data = self.shadow[name]
 
     def restore(self):
+        """Restore original weights to the model after EMA evaluation"""
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 assert name in self.backup
@@ -97,57 +101,54 @@ class UNetDiscriminatorSN(nn.Module):
         self.skip_connection = skip_connection
         self.conv0 = nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1)
 
-        # downsample
+        # Downsample layers
         self.conv1 = norm(nn.Conv2d(num_feat, num_feat * 2, 4, 2, 1, bias=False))
         self.conv2 = norm(nn.Conv2d(num_feat * 2, num_feat * 4, 4, 2, 1, bias=False))
         self.conv3 = norm(nn.Conv2d(num_feat * 4, num_feat * 8, 4, 2, 1, bias=False))
 
-        # upsample
+        # Upsample layers
         self.conv4 = norm(nn.Conv2d(num_feat * 8, num_feat * 4, 3, 1, 1, bias=False))
         self.conv5 = norm(nn.Conv2d(num_feat * 4, num_feat * 2, 3, 1, 1, bias=False))
         self.conv6 = norm(nn.Conv2d(num_feat * 2, num_feat, 3, 1, 1, bias=False))
 
-        # extra convolutions
+        # Extra convolutions
         self.conv7 = norm(nn.Conv2d(num_feat, num_feat, 3, 1, 1, bias=False))
         self.conv8 = norm(nn.Conv2d(num_feat, num_feat, 3, 1, 1, bias=False))
         self.conv9 = nn.Conv2d(num_feat, 1, 3, 1, 1)
 
     def forward(self, x):
-        # downsample
+        # Downsample
         x0 = F.leaky_relu(self.conv0(x), negative_slope=0.2, inplace=True)
         x1 = F.leaky_relu(self.conv1(x0), negative_slope=0.2, inplace=True)
         x2 = F.leaky_relu(self.conv2(x1), negative_slope=0.2, inplace=True)
         x3 = F.leaky_relu(self.conv3(x2), negative_slope=0.2, inplace=True)
 
-        # upsample
+        # Upsample
         x3 = F.interpolate(x3, scale_factor=2, mode='bilinear', align_corners=False)
         x4 = F.leaky_relu(self.conv4(x3), negative_slope=0.2, inplace=True)
-
         if self.skip_connection:
             x4 = x4 + x2
         x4 = F.interpolate(x4, scale_factor=2, mode='bilinear', align_corners=False)
         x5 = F.leaky_relu(self.conv5(x4), negative_slope=0.2, inplace=True)
-
         if self.skip_connection:
             x5 = x5 + x1
         x5 = F.interpolate(x5, scale_factor=2, mode='bilinear', align_corners=False)
         x6 = F.leaky_relu(self.conv6(x5), negative_slope=0.2, inplace=True)
-
         if self.skip_connection:
             x6 = x6 + x0
 
-        # extra convolutions
+        # Extra convolutions
         out = F.leaky_relu(self.conv7(x6), negative_slope=0.2, inplace=True)
         out = F.leaky_relu(self.conv8(out), negative_slope=0.2, inplace=True)
         out = self.conv9(out)
 
         return out
 
-# Build the VGG model for perceptual loss calculation with multiple feature maps
+# VGG model for perceptual loss calculation
 class VGGFeatureExtractor(nn.Module):
     def __init__(self):
         super(VGGFeatureExtractor, self).__init__()
-        vgg = vgg19(weights='IMAGENET1K_V1')  # Updated to use the correct weight format
+        vgg = vgg19(weights='IMAGENET1K_V1')  # Updated to use correct weights
         feature_layers = ['features.0', 'features.5', 'features.10', 'features.19', 'features.28']
         self.features = nn.ModuleList([vgg.features[int(layer.split('.')[1])] for layer in feature_layers])
 
@@ -175,6 +176,11 @@ def compute_perceptual_loss(vgg, y_true, y_pred):
 def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen_optimizer, disc_optimizer, ema):
     generator.train()
     discriminator.train()
+
+    # Move data to GPU (if available)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    low_res_image = low_res_image.to(device)
+    high_res_image = high_res_image.to(device)
 
     # Generator forward pass
     generated_image = generator(low_res_image)
@@ -204,14 +210,14 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
 
     return total_loss.item(), generated_image
 
-# Main training function with EMA, Spectral Normalization, and saving generated images
+# Main training function
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
-        generator = Generator()
-        discriminator = UNetDiscriminatorSN(num_in_ch=3)
-        ema_generator = Generator()  # EMA model for generator
-        vgg = VGGFeatureExtractor()
+        generator = Generator().cuda()
+        discriminator = UNetDiscriminatorSN(num_in_ch=3).cuda()
+        ema_generator = Generator().cuda()  # EMA model for generator
+        vgg = VGGFeatureExtractor().cuda()
 
         # Optimizers for generator and discriminator
         gen_optimizer = torch.optim.Adam(generator.parameters(), lr=2e-4, betas=(0.9, 0.99))
@@ -221,13 +227,11 @@ def train_model():
         ema = EMA(generator, decay=0.999)
         ema.register()
 
-        # Load your dataset here (same as before)
+        # Load dataset
         low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=685)
 
-        # Ensure 'uploads' directory exists
+        # Ensure directories exist
         os.makedirs('uploads', exist_ok=True)
-
-        # Ensure 'checkpoints' directory exists
         os.makedirs('checkpoints', exist_ok=True)
 
         # Training loop for 500 epochs
@@ -241,9 +245,9 @@ def train_model():
 
                 print(f"Epoch {epoch + 1}, Image {i + 1}/{len(low_res_images)} - Loss: {combined_loss:.6f}")
 
-                # Save the generated image to the 'uploads' folder after processing each image
+                # Save the generated image to 'uploads'
                 generated_image_np = generated_image.squeeze(0).detach().cpu().numpy().transpose(1, 2, 0) * 255
-                generated_image_np = generated_image_np.clip(0, 255)  # Ensure pixel values are in the right range
+                generated_image_np = generated_image_np.clip(0, 255)
                 generated_image_pil = Image.fromarray(generated_image_np.astype('uint8'))
                 generated_image_pil.save(f"uploads/generated_image_epoch_{epoch + 1}_image_{i + 1}.jpg")
 
@@ -261,6 +265,5 @@ def train_model():
     except Exception as e:
         print(f"Error during training: {str(e)}")
 
-# Call the training function
 if __name__ == "__main__":
     train_model()
