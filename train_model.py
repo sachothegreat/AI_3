@@ -234,8 +234,8 @@ def train_model():
         os.makedirs('uploads', exist_ok=True)
         os.makedirs('checkpoints', exist_ok=True)
 
-        # Training loop for 500 epochs
-        for epoch in range(500):
+        # Training loop for 495 epochs
+        for epoch in range(495):
             for i, (low_res_image, high_res_image) in enumerate(zip(low_res_images, high_res_images)):
                 low_res_image = torch.unsqueeze(low_res_image, 0)  # Add batch dimension
                 high_res_image = torch.unsqueeze(high_res_image, 0)
