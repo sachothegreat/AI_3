@@ -8,12 +8,8 @@ from utils import save_model, display_training_progress, EarlyStopping  # Import
 from PIL import Image
 import os
 
-# Mount Google Drive to save the models there
-from google.colab import drive
-drive.mount('/content/drive')
-
-# Set directory path in Google Drive for saving models
-save_dir = '/content/drive/MyDrive/ESRGAN_Models/'
+# Set directory path in the local AI_3 directory for saving models
+save_dir = '/content/AI_3/'
 os.makedirs(save_dir, exist_ok=True)  # Create the directory if it doesn't exist
 
 # Exponential Moving Average (EMA) class
@@ -218,7 +214,7 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
 
     return total_loss.item(), generated_image
 
-# Main training function with 1 epoch and saving to Google Drive in specific directory
+# Main training function with 1 epoch and saving to AI_3 directory
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
@@ -261,15 +257,15 @@ def train_model():
                 # Update EMA for the generator
                 ema.update()
 
-            # Save checkpoints to the specified Google Drive directory
+            # Save checkpoints to the local AI_3 directory
             torch.save(generator.state_dict(), f'{save_dir}/generator_epoch_{epoch + 1}.pth')
             torch.save(discriminator.state_dict(), f'{save_dir}/discriminator_epoch_{epoch + 1}.pth')
-            print(f"Checkpoints saved to Google Drive at {save_dir} for epoch {epoch + 1}")
+            print(f"Checkpoints saved locally at {save_dir} for epoch {epoch + 1}")
 
-        # Apply EMA weights for the final generator model and save to the specified directory
+        # Apply EMA weights for the final generator model and save to the local directory
         ema.apply_shadow()
         torch.save(generator.state_dict(), f'{save_dir}/esrgan_final.pth')
-        print(f"Final model saved to Google Drive at {save_dir}/esrgan_final.pth")
+        print(f"Final model saved locally at {save_dir}/esrgan_final.pth")
 
     except Exception as e:
         print(f"Error during training: {str(e)}")
