@@ -232,7 +232,7 @@ def train_model():
         ema.register()
 
         # Load dataset
-        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=5)  # Reduced dataset size for testing
+        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=684)  # Reduced dataset size for testing
 
         # Ensure directories exist locally
         os.makedirs('uploads', exist_ok=True)
