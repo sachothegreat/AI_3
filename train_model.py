@@ -8,6 +8,10 @@ from utils import save_model, display_training_progress, EarlyStopping  # Import
 from PIL import Image
 import os
 
+# Mount Google Drive to save the models there
+from google.colab import drive
+drive.mount('/content/drive')
+
 # Exponential Moving Average (EMA) class
 class EMA():
     def __init__(self, model, decay):
@@ -210,7 +214,7 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
 
     return total_loss.item(), generated_image
 
-# Main training function
+# Main training function with 1 epoch and saving to Google Drive
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
@@ -228,14 +232,14 @@ def train_model():
         ema.register()
 
         # Load dataset
-        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=685)
+        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=5)  # Reduced dataset size for testing
 
         # Ensure directories exist
         os.makedirs('uploads', exist_ok=True)
         os.makedirs('checkpoints', exist_ok=True)
 
-        # Training loop for 210 epochs
-        for epoch in range(210):
+        # Training loop for 1 epoch
+        for epoch in range(1):
             for i, (low_res_image, high_res_image) in enumerate(zip(low_res_images, high_res_images)):
                 low_res_image = torch.unsqueeze(low_res_image, 0)  # Add batch dimension
                 high_res_image = torch.unsqueeze(high_res_image, 0)
@@ -254,13 +258,15 @@ def train_model():
                 # Update EMA for the generator
                 ema.update()
 
-            # Save checkpoints
-            torch.save(generator.state_dict(), f'checkpoints/generator_epoch_{epoch + 1}.pth')
-            torch.save(discriminator.state_dict(), f'checkpoints/discriminator_epoch_{epoch + 1}.pth')
+            # Save checkpoints to Google Drive
+            torch.save(generator.state_dict(), f'/content/drive/MyDrive/generator_epoch_{epoch + 1}.pth')
+            torch.save(discriminator.state_dict(), f'/content/drive/MyDrive/discriminator_epoch_{epoch + 1}.pth')
+            print(f"Checkpoints saved to Google Drive for epoch {epoch + 1}")
 
-        # Apply EMA weights for the final generator model
+        # Apply EMA weights for the final generator model and save to Google Drive
         ema.apply_shadow()
-        torch.save(generator.state_dict(), 'esrgan_final.pth')
+        torch.save(generator.state_dict(), '/content/drive/MyDrive/esrgan_final.pth')
+        print("Final model saved to Google Drive as 'esrgan_final.pth'")
 
     except Exception as e:
         print(f"Error during training: {str(e)}")
