@@ -214,7 +214,7 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
 
     return total_loss.item(), generated_image
 
-# Main training function with 1 epoch and saving to AI_3 directory
+# Main training function with 209 epochs and saving the final model only
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
@@ -232,13 +232,13 @@ def train_model():
         ema.register()
 
         # Load dataset
-        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=684)  # Reduced dataset size for testing
+        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=684)  # Load 684 images
 
         # Ensure directories exist locally
         os.makedirs('uploads', exist_ok=True)
 
-        # Training loop for 1 epoch
-        for epoch in range(1):
+        # Training loop for 209 epochs
+        for epoch in range(209):
             for i, (low_res_image, high_res_image) in enumerate(zip(low_res_images, high_res_images)):
                 low_res_image = torch.unsqueeze(low_res_image, 0)  # Add batch dimension
                 high_res_image = torch.unsqueeze(high_res_image, 0)
@@ -256,11 +256,6 @@ def train_model():
 
                 # Update EMA for the generator
                 ema.update()
-
-            # Save checkpoints to the local AI_3 directory
-            torch.save(generator.state_dict(), f'{save_dir}/generator_epoch_{epoch + 1}.pth')
-            torch.save(discriminator.state_dict(), f'{save_dir}/discriminator_epoch_{epoch + 1}.pth')
-            print(f"Checkpoints saved locally at {save_dir} for epoch {epoch + 1}")
 
         # Apply EMA weights for the final generator model and save to the local directory
         ema.apply_shadow()
