@@ -12,6 +12,10 @@ import os
 from google.colab import drive
 drive.mount('/content/drive')
 
+# Set directory path in Google Drive for saving models
+save_dir = '/content/drive/MyDrive/ESRGAN_Models/'
+os.makedirs(save_dir, exist_ok=True)  # Create the directory if it doesn't exist
+
 # Exponential Moving Average (EMA) class
 class EMA():
     def __init__(self, model, decay):
@@ -214,7 +218,7 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
 
     return total_loss.item(), generated_image
 
-# Main training function with 1 epoch and saving to Google Drive
+# Main training function with 1 epoch and saving to Google Drive in specific directory
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
@@ -234,9 +238,8 @@ def train_model():
         # Load dataset
         low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=5)  # Reduced dataset size for testing
 
-        # Ensure directories exist
+        # Ensure directories exist locally
         os.makedirs('uploads', exist_ok=True)
-        os.makedirs('checkpoints', exist_ok=True)
 
         # Training loop for 1 epoch
         for epoch in range(1):
@@ -249,7 +252,7 @@ def train_model():
 
                 print(f"Epoch {epoch + 1}, Image {i + 1}/{len(low_res_images)} - Loss: {combined_loss:.6f}")
 
-                # Save the generated image to 'uploads'
+                # Save the generated image locally to 'uploads'
                 generated_image_np = generated_image.squeeze(0).detach().cpu().numpy().transpose(1, 2, 0) * 255
                 generated_image_np = generated_image_np.clip(0, 255)
                 generated_image_pil = Image.fromarray(generated_image_np.astype('uint8'))
@@ -258,15 +261,15 @@ def train_model():
                 # Update EMA for the generator
                 ema.update()
 
-            # Save checkpoints to Google Drive
-            torch.save(generator.state_dict(), f'/content/drive/MyDrive/generator_epoch_{epoch + 1}.pth')
-            torch.save(discriminator.state_dict(), f'/content/drive/MyDrive/discriminator_epoch_{epoch + 1}.pth')
-            print(f"Checkpoints saved to Google Drive for epoch {epoch + 1}")
+            # Save checkpoints to the specified Google Drive directory
+            torch.save(generator.state_dict(), f'{save_dir}/generator_epoch_{epoch + 1}.pth')
+            torch.save(discriminator.state_dict(), f'{save_dir}/discriminator_epoch_{epoch + 1}.pth')
+            print(f"Checkpoints saved to Google Drive at {save_dir} for epoch {epoch + 1}")
 
-        # Apply EMA weights for the final generator model and save to Google Drive
+        # Apply EMA weights for the final generator model and save to the specified directory
         ema.apply_shadow()
-        torch.save(generator.state_dict(), '/content/drive/MyDrive/esrgan_final.pth')
-        print("Final model saved to Google Drive as 'esrgan_final.pth'")
+        torch.save(generator.state_dict(), f'{save_dir}/esrgan_final.pth')
+        print(f"Final model saved to Google Drive at {save_dir}/esrgan_final.pth")
 
     except Exception as e:
         print(f"Error during training: {str(e)}")
