@@ -52,18 +52,34 @@
             margin-top: 20px;
             font-size: 1.2rem;
         }
+
+        .output-container {
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        img {
+            max-width: 100%;
+            display: block;
+            margin: 0 auto;
+        }
+
     </style>
 </head>
 <body>
 
 <div class="upload-container">
-    <h1>Upload Image or Video</h1>
+    <h1>Upload Image for Super Resolution</h1>
     <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
-        <input type="file" id="fileInput" accept=".jpg, .jpeg, .png, .mp4" required>
+        <input type="file" id="fileInput" accept=".jpg, .jpeg, .png" required>
         <br>
         <button type="submit">Upload</button>
     </form>
     <div class="message" id="message"></div>
+</div>
+
+<div class="output-container" id="outputContainer">
+    <img id="outputImage" style="display: none;" alt="Processed Image">
 </div>
 
 <script>
@@ -72,6 +88,7 @@
 
         const fileInput = document.getElementById('fileInput');
         const messageElement = document.getElementById('message');
+        const outputImage = document.getElementById('outputImage');
         const file = fileInput.files[0];
 
         if (!file) {
@@ -83,6 +100,8 @@
         const formData = new FormData();
         formData.append('file', file);
 
+        outputImage.style.display = 'none';
+
         fetch('/upload', {
             method: 'POST',
             body: formData
@@ -93,18 +112,14 @@
                         throw new Error(text);
                     });
                 }
-                return response.blob();  // Handle response as a file (image or video)
+                return response.blob();  // Handle response as a blob (image)
             })
             .then(blob => {
                 const url = window.URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = file.name;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
+                outputImage.src = url;
+                outputImage.style.display = 'block';
 
-                messageElement.textContent = 'File uploaded successfully!';
+                messageElement.textContent = 'File processed successfully!';
                 messageElement.style.color = 'green';
             })
             .catch(error => {
