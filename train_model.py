@@ -50,34 +50,45 @@ class EMA():
                 param.data = self.backup[name]
         self.backup = {}
 
-# Generator model (ESRGAN-like)
-class Generator(nn.Module):
+# UNet-like Generator model (ESRGAN)
+class GeneratorUNetLike(nn.Module):
     def __init__(self, num_residual_blocks=16):
-        super(Generator, self).__init__()
+        super(GeneratorUNetLike, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=9, stride=1, padding=4)
         self.bn1 = nn.BatchNorm2d(64)
         self.leaky_relu = nn.LeakyReLU(0.2)
 
-        # Residual blocks
+        # Residual blocks (encoder)
         self.residual_blocks = nn.Sequential(
             *[ResidualBlock(64) for _ in range(num_residual_blocks)]
         )
 
-        # Upsampling layers
+        # Upsampling layers with intermediate conv layers and skip connections
         self.upsample1 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.refine1 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)  # Conv layer after upsampling
         self.upsample2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.refine2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)  # Conv layer after upsampling
 
         # Final output layer
         self.conv2 = nn.Conv2d(64, 3, kernel_size=9, stride=1, padding=4)
 
     def forward(self, x):
-        x = self.leaky_relu(self.bn1(self.conv1(x)))
-        x = self.residual_blocks(x)
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        x = self.leaky_relu(self.upsample1(x))
-        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        x = torch.sigmoid(self.conv2(x))
-        return x
+        # Encoder
+        x1 = self.leaky_relu(self.bn1(self.conv1(x)))
+        x_res = self.residual_blocks(x1)
+
+        # Upsampling + refinement (UNet-style)
+        x_upsample1 = F.interpolate(x_res, scale_factor=2, mode='bilinear', align_corners=False)
+        x_upsample1 = self.leaky_relu(self.upsample1(x_upsample1))
+        x_upsample1 = self.leaky_relu(self.refine1(x_upsample1))  # Refine upsampled output
+
+        x_upsample2 = F.interpolate(x_upsample1, scale_factor=2, mode='bilinear', align_corners=False)
+        x_upsample2 = self.leaky_relu(self.upsample2(x_upsample2))
+        x_upsample2 = self.leaky_relu(self.refine2(x_upsample2))  # Refine again after upsampling
+
+        # Final output
+        x_final = torch.sigmoid(self.conv2(x_upsample2))
+        return x_final
 
 # Residual Block for Generator
 class ResidualBlock(nn.Module):
@@ -214,13 +225,13 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
 
     return total_loss.item(), generated_image
 
-# Main training function with 209 epochs and saving the final model only
+# Main training function with 850 epochs and updated datasets
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
-        generator = Generator().cuda()
+        generator = GeneratorUNetLike().cuda()
         discriminator = UNetDiscriminatorSN(num_in_ch=3).cuda()
-        ema_generator = Generator().cuda()  # EMA model for generator
+        ema_generator = GeneratorUNetLike().cuda()  # EMA model for generator
         vgg = VGGFeatureExtractor().cuda()
 
         # Optimizers for generator and discriminator
@@ -231,14 +242,14 @@ def train_model():
         ema = EMA(generator, decay=0.999)
         ema.register()
 
-        # Load dataset
-        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=684)  # Load 684 images
+        # Load dataset from updated directories
+        low_res_images, high_res_images = load_image_pairs('updated_low_res', 'updated_high_res', num_images=5)
 
         # Ensure directories exist locally
         os.makedirs('uploads', exist_ok=True)
 
-        # Training loop for 209 epochs
-        for epoch in range(209):
+        # Training loop for 850 epochs
+        for epoch in range(850):
             for i, (low_res_image, high_res_image) in enumerate(zip(low_res_images, high_res_images)):
                 low_res_image = torch.unsqueeze(low_res_image, 0)  # Add batch dimension
                 high_res_image = torch.unsqueeze(high_res_image, 0)
