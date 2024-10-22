@@ -12,6 +12,7 @@ def load_image(image_path, target_size=None):
     if target_size:
         img = img.resize(target_size, Image.BICUBIC)  # Resize using bicubic interpolation
     img = np.array(img) / 255.0  # Normalize image to [0, 1]
+    img = img * 2 - 1  # Rescale image from [0, 1] to [-1, 1]
     return torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)  # Convert to tensor and adjust dimensions
 
 # Function to load all image pairs (low and high res) for training

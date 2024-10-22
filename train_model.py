@@ -69,7 +69,7 @@ class GeneratorUNetLike(nn.Module):
         self.upsample2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
         self.refine2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)  # Conv layer after upsampling
 
-        # Final output layer
+        # Final output layer: Use tanh instead of sigmoid
         self.conv2 = nn.Conv2d(64, 3, kernel_size=9, stride=1, padding=4)
 
     def forward(self, x):
@@ -87,7 +87,7 @@ class GeneratorUNetLike(nn.Module):
         x_upsample2 = self.leaky_relu(self.refine2(x_upsample2))  # Refine again after upsampling
 
         # Final output
-        x_final = torch.sigmoid(self.conv2(x_upsample2))
+        x_final = torch.tanh(self.conv2(x_upsample2))  # Use tanh instead of sigmoid
         return x_final
 
 # Residual Block for Generator
@@ -260,9 +260,11 @@ def train_model():
                 print(f"Epoch {epoch + 1}, Image {i + 1}/{len(low_res_images)} - Loss: {combined_loss:.6f}")
 
                 # Save the generated image locally to 'uploads'
-                generated_image_np = generated_image.squeeze(0).detach().cpu().numpy().transpose(1, 2, 0) * 255
-                generated_image_np = generated_image_np.clip(0, 255)
-                generated_image_pil = Image.fromarray(generated_image_np.astype('uint8'))
+                generated_image_np = generated_image.squeeze(0).detach().cpu().numpy().transpose(1, 2, 0)
+                generated_image_np = (generated_image_np + 1) / 2  # Convert from [-1, 1] to [0, 1]
+                generated_image_np = generated_image_np * 255.0    # Convert to [0, 255]
+                generated_image_np = generated_image_np.clip(0, 255).astype('uint8')  # Clip and convert to uint8
+                generated_image_pil = Image.fromarray(generated_image_np)
                 generated_image_pil.save(f"uploads/generated_image_epoch_{epoch + 1}_image_{i + 1}.jpg")
 
                 # Update EMA for the generator
