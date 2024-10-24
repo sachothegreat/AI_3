@@ -185,7 +185,7 @@ if __name__ == "__main__":
     parser.add_argument('--crop_size', default=256, type=int, help='training images crop size')
     parser.add_argument('--upscale_factor', default=4, type=int, help='super resolution upscale factor')
     parser.add_argument('--batch_size', default=48, type=int, help='batch size of train dataset')
-    parser.add_argument('--warmup_batches', default=10_000, type=int, help='number of batches with pixel-wise loss only')
+    parser.add_argument('--warmup_batches', default=1_000, type=int, help='number of batches with pixel-wise loss only')  # Reduced warmup to 1,000
     parser.add_argument('--n_batches', default=14_000, type=int, help='number of batches of training')
     parser.add_argument('--residual_blocks', default=23, type=int, help='number of residual blocks in the generator')
     parser.add_argument('--batch', default=0, type=int, help='batch to start training from')
