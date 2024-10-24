@@ -3,14 +3,14 @@ from torch import nn
 from torchvision.models import vgg19
 from torch.nn.utils import spectral_norm
 import torch.nn.functional as F
-from dataset import load_image_pairs  # Ensure this is correctly imported from your dataset.py
-from utils import save_model, display_training_progress, EarlyStopping  # Import from utils.py
+from dataset import load_image_pairs
+from utils import save_model, display_training_progress, EarlyStopping
 from PIL import Image
 import os
 
 # Set directory path in the local AI_3 directory for saving models
 save_dir = '/content/AI_3/'
-os.makedirs(save_dir, exist_ok=True)  # Create the directory if it doesn't exist
+os.makedirs(save_dir, exist_ok=True)
 
 # Exponential Moving Average (EMA) class
 class EMA():
@@ -23,13 +23,13 @@ class EMA():
     def register(self):
         """Register the initial parameters for the EMA model"""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:  # Fixed syntax
+            if param.requires_grad:
                 self.shadow[name] = param.data.clone()
 
     def update(self):
         """Update the EMA model with new averaged weights"""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:  # Fixed syntax
+            if param.requires_grad:
                 assert name in self.shadow
                 new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
                 self.shadow[name] = new_average.clone()
@@ -37,7 +37,7 @@ class EMA():
     def apply_shadow(self):
         """Apply the EMA weights to the model for evaluation"""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:  # Fixed syntax
+            if param.requires_grad:
                 assert name in self.shadow
                 self.backup[name] = param.data
                 param.data = self.shadow[name]
@@ -45,68 +45,86 @@ class EMA():
     def restore(self):
         """Restore original weights to the model after EMA evaluation"""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:  # Fixed syntax
+            if param.requires_grad:
                 assert name in self.backup
                 param.data = self.backup[name]
         self.backup = {}
 
-# UNet-like Generator model (ESRGAN)
-class GeneratorUNetLike(nn.Module):
-    def __init__(self, num_residual_blocks=16):
-        super(GeneratorUNetLike, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=9, stride=1, padding=4)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.leaky_relu = nn.LeakyReLU(0.2)
+# RRDB-Based Generator (Residual in Residual Dense Block)
+class DenseResidualBlock(nn.Module):
+    def __init__(self, filters, res_scale=0.2):
+        super(DenseResidualBlock, self).__init__()
+        self.res_scale = res_scale
 
-        # Residual blocks (encoder)
-        self.residual_blocks = nn.Sequential(
-            *[ResidualBlock(64) for _ in range(num_residual_blocks)]
+        def block(in_features, non_linearity=True):
+            layers = [nn.Conv2d(in_features, filters, 3, 1, 1, bias=True)]
+            if non_linearity:
+                layers += [nn.LeakyReLU(0.2, inplace=True)]
+            return nn.Sequential(*layers)
+
+        self.b1 = block(filters)
+        self.b2 = block(2 * filters)
+        self.b3 = block(3 * filters)
+        self.b4 = block(4 * filters)
+        self.b5 = block(5 * filters, non_linearity=False)
+
+    def forward(self, x):
+        inputs = x
+        out1 = self.b1(inputs)
+        out2 = self.b2(torch.cat([inputs, out1], 1))
+        out3 = self.b3(torch.cat([inputs, out1, out2], 1))
+        out4 = self.b4(torch.cat([inputs, out1, out2, out3], 1))
+        out5 = self.b5(torch.cat([inputs, out1, out2, out3, out4], 1))
+        return out5.mul(self.res_scale) + x
+
+class ResidualInResidualDenseBlock(nn.Module):
+    def __init__(self, filters, res_scale=0.2):
+        super(ResidualInResidualDenseBlock, self).__init__()
+        self.res_scale = res_scale
+        self.dense_blocks = nn.Sequential(
+            DenseResidualBlock(filters), DenseResidualBlock(filters), DenseResidualBlock(filters)
         )
 
-        # Upsampling layers with intermediate conv layers and skip connections
-        self.upsample1 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
-        self.refine1 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)  # Conv layer after upsampling
-        self.upsample2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
-        self.refine2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)  # Conv layer after upsampling
-
-        # Final output layer: Use tanh instead of sigmoid
-        self.conv2 = nn.Conv2d(64, 3, kernel_size=9, stride=1, padding=4)
-
     def forward(self, x):
-        # Encoder
-        x1 = self.leaky_relu(self.bn1(self.conv1(x)))
-        x_res = self.residual_blocks(x1)
+        return self.dense_blocks(x).mul(self.res_scale) + x
 
-        # Upsampling + refinement (UNet-style)
-        x_upsample1 = F.interpolate(x_res, scale_factor=2, mode='bilinear', align_corners=False)
-        x_upsample1 = self.leaky_relu(self.upsample1(x_upsample1))
-        x_upsample1 = self.leaky_relu(self.refine1(x_upsample1))  # Refine upsampled output
+class GeneratorRRDB(nn.Module):
+    def __init__(self, channels, filters=64, num_res_blocks=16, num_upsample=2):
+        super(GeneratorRRDB, self).__init__()
+        # First convolutional layer
+        self.conv1 = nn.Conv2d(channels, filters, kernel_size=3, stride=1, padding=1)
 
-        x_upsample2 = F.interpolate(x_upsample1, scale_factor=2, mode='bilinear', align_corners=False)
-        x_upsample2 = self.leaky_relu(self.upsample2(x_upsample2))
-        x_upsample2 = self.leaky_relu(self.refine2(x_upsample2))  # Refine again after upsampling
+        # RRDB Blocks
+        self.res_blocks = nn.Sequential(*[ResidualInResidualDenseBlock(filters) for _ in range(num_res_blocks)])
 
-        # Final output
-        x_final = torch.tanh(self.conv2(x_upsample2))  # Use tanh instead of sigmoid
-        return x_final
-
-# Residual Block for Generator
-class ResidualBlock(nn.Module):
-    def __init__(self, filters=64):
-        super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
-        self.bn1 = nn.BatchNorm2d(filters)
-        self.leaky_relu = nn.LeakyReLU(0.2)
-        self.dropout = nn.Dropout(0.3)
+        # Second convolutional layer
         self.conv2 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(filters)
+
+        # Upsampling layers
+        upsample_layers = []
+        for _ in range(num_upsample):
+            upsample_layers += [
+                nn.Conv2d(filters, filters * 4, kernel_size=3, stride=1, padding=1),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.PixelShuffle(upscale_factor=2)
+            ]
+        self.upsampling = nn.Sequential(*upsample_layers)
+
+        # Final output block
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(filters, channels, kernel_size=3, stride=1, padding=1)
+        )
 
     def forward(self, x):
-        residual = x
-        x = self.leaky_relu(self.bn1(self.conv1(x)))
-        x = self.dropout(x)
-        x = self.bn2(self.conv2(x))
-        return x + residual
+        out1 = self.conv1(x)
+        out = self.res_blocks(out1)
+        out2 = self.conv2(out)
+        out = torch.add(out1, out2)
+        out = self.upsampling(out)
+        out = self.conv3(out)
+        return out
 
 # UNet-based Discriminator with Spectral Normalization (SN)
 class UNetDiscriminatorSN(nn.Module):
@@ -232,9 +250,9 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
-        generator = GeneratorUNetLike().cuda()
+        generator = GeneratorRRDB(channels=3).cuda()
         discriminator = UNetDiscriminatorSN(num_in_ch=3).cuda()
-        ema_generator = GeneratorUNetLike().cuda()  # EMA model for generator
+        ema_generator = GeneratorRRDB(channels=3).cuda()  # EMA model for generator
         vgg = VGGFeatureExtractor().cuda()
 
         # Optimizers for generator and discriminator
