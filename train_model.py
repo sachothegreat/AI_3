@@ -186,11 +186,11 @@ if __name__ == "__main__":
     parser.add_argument('--upscale_factor', default=4, type=int, help='super resolution upscale factor')
     parser.add_argument('--batch_size', default=48, type=int, help='batch size of train dataset')
     parser.add_argument('--warmup_batches', default=1_000, type=int, help='number of batches with pixel-wise loss only')  # Reduced warmup to 1,000
-    parser.add_argument('--n_batches', default=14_000, type=int, help='number of batches of training')
+    parser.add_argument('--n_batches', default=2_000, type=int, help='number of batches of training')  # Reduced number of total batches
     parser.add_argument('--residual_blocks', default=23, type=int, help='number of residual blocks in the generator')
     parser.add_argument('--batch', default=0, type=int, help='batch to start training from')
     parser.add_argument('--lr', default=0.0002, type=float, help='adam: learning rate')
-    parser.add_argument('--sample_interval', default=100, type=int, help='interval between saving image samples')
+    parser.add_argument('--sample_interval', default=500, type=int, help='interval between saving image samples')  # Increased to save less frequently
     opt = parser.parse_args()
     print(opt)
 
