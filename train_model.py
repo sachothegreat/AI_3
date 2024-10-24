@@ -23,13 +23,13 @@ class EMA():
     def register(self):
         """Register the initial parameters for the EMA model"""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:
+            if param.requires_grad:  # Fixed syntax
                 self.shadow[name] = param.data.clone()
 
     def update(self):
         """Update the EMA model with new averaged weights"""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:
+            if param.requires_grad:  # Fixed syntax
                 assert name in self.shadow
                 new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
                 self.shadow[name] = new_average.clone()
@@ -37,7 +37,7 @@ class EMA():
     def apply_shadow(self):
         """Apply the EMA weights to the model for evaluation"""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:
+            if param.requires_grad:  # Fixed syntax
                 assert name in self.shadow
                 self.backup[name] = param.data
                 param.data = self.shadow[name]
@@ -45,7 +45,7 @@ class EMA():
     def restore(self):
         """Restore original weights to the model after EMA evaluation"""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:
+            if param.requires_grad:  # Fixed syntax
                 assert name in self.backup
                 param.data = self.backup[name]
         self.backup = {}
