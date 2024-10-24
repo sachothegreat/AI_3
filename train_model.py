@@ -200,16 +200,19 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
     # Generator forward pass
     generated_image = generator(low_res_image)
 
+    # Rescale generated image from [-1, 1] to [0, 1] for BCE loss
+    generated_image_rescaled = (generated_image + 1) / 2
+
     # Discriminator forward pass
     real_output = discriminator(high_res_image)
-    fake_output = discriminator(generated_image.detach())
+    fake_output = discriminator(generated_image_rescaled.detach())
 
     # Compute perceptual loss
     perceptual_loss = compute_perceptual_loss(vgg, high_res_image, generated_image)
 
-    # Adversarial loss (BCE loss)
-    adversarial_loss_real = nn.BCEWithLogitsLoss()(real_output, torch.ones_like(real_output))
-    adversarial_loss_fake = nn.BCEWithLogitsLoss()(fake_output, torch.zeros_like(fake_output))
+    # Adversarial loss: Using MSE for both real and fake losses
+    adversarial_loss_real = nn.MSELoss()(real_output, torch.ones_like(real_output))  # Real images MSE loss
+    adversarial_loss_fake = nn.MSELoss()(fake_output, torch.zeros_like(fake_output))  # Fake images MSE loss
     adversarial_loss = (adversarial_loss_real + adversarial_loss_fake) / 2
 
     # Total generator loss
