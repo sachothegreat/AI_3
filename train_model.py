@@ -10,8 +10,8 @@ from torchvision.utils import save_image
 from dataset import load_image_pairs, TrainDatasetFromFolder
 
 # Create necessary directories
+os.makedirs('saved_models', exist_ok=True)
 os.makedirs('images/training', exist_ok=True)
-os.makedirs('saved_models', exist_ok=True)  # Ensure the saved_models directory exists
 
 # Exponential Moving Average (EMA) class
 class EMA():
@@ -182,15 +182,14 @@ if __name__ == "__main__":
 
     # Argument Parsing for dynamic hyperparameters
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs', default=850, type=int, help='number of epochs for training')  # Added epochs
+    parser.add_argument('--epochs', default=850, type=int, help='number of epochs of training')
     parser.add_argument('--crop_size', default=256, type=int, help='training images crop size')
     parser.add_argument('--upscale_factor', default=4, type=int, help='super resolution upscale factor')
     parser.add_argument('--batch_size', default=48, type=int, help='batch size of train dataset')
-    parser.add_argument('--n_batches', default=200, type=int, help='number of batches per epoch')  # Specify batches per epoch
-    parser.add_argument('--residual_blocks', default=23, type=int, help='number of residual blocks in the generator')
     parser.add_argument('--batch', default=0, type=int, help='batch to start training from')
     parser.add_argument('--lr', default=0.0002, type=float, help='adam: learning rate')
-    parser.add_argument('--sample_interval', default=500, type=int, help='interval between saving image samples')  # Increased sample interval
+    parser.add_argument('--sample_interval', default=500, type=int, help='interval between saving image samples')
+    parser.add_argument('--residual_blocks', default=23, type=int, help='number of residual blocks in the generator')  # Add residual_blocks argument
     opt = parser.parse_args()
     print(opt)
 
@@ -233,10 +232,10 @@ if __name__ == "__main__":
     train_set = TrainDatasetFromFolder('updated_low_res', crop_size=opt.crop_size, upscale_factor=opt.upscale_factor)
     train_loader = DataLoader(dataset=train_set, num_workers=0, batch_size=opt.batch_size, shuffle=True)
 
-    # Training loop with epochs
+    # Training loop
     for epoch in range(opt.epochs):
         for i, (data, target) in enumerate(train_loader):
-            batches_done = i
+            batches_done = epoch * len(train_loader) + i
 
             imgs_lr = data.to(device)
             imgs_hr = target.to(device)
@@ -301,7 +300,7 @@ if __name__ == "__main__":
             # Log Progress
             # -------------------------
 
-            print(f"[Epoch {epoch+1}/{opt.epochs}] [Batch {i}/{len(train_loader)}] [D loss: {loss_D.item():.6f}] [G loss: {loss_G.item():.6f}, content: {loss_content.item():.6f}, adv: {loss_GAN.item():.6f}, pixel: {loss_pixel.item():.6f}]")
+            print(f"[Epoch {epoch + 1}/{opt.epochs}] [Batch {i}/{len(train_loader)}] [D loss: {loss_D.item():.6f}] [G loss: {loss_G.item():.6f}, content: {loss_content.item():.6f}, adv: {loss_GAN.item():.6f}, pixel: {loss_pixel.item():.6f}]")
 
             # Save image samples every opt.sample_interval iterations
             if batches_done % opt.sample_interval == 0:
@@ -309,10 +308,15 @@ if __name__ == "__main__":
                 img_grid = torch.clamp(torch.cat((imgs_lr, gen_hr, imgs_hr), -1), min=0, max=1)
                 save_image(img_grid, 'images/training/%d.png' % batches_done, nrow=1, normalize=False)
 
-        # Save model and EMA weights after each epoch
+        # Save model and EMA weights at the end of each epoch
         ema_G.apply_shadow()
         ema_D.apply_shadow()
-        torch.save(generator.state_dict(), 'saved_models/generator.pth')  # Ensure saved_models exists
-        torch.save(discriminator.state_dict(), 'saved_models/discriminator.pth')  # Ensure saved_models exists
+
+        # Save generator and discriminator models as sachi.pth
+        torch.save({
+            'generator': generator.state_dict(),
+            'discriminator': discriminator.state_dict()
+        }, '/Users/sachinrao/complex_proj/sachi.pth')
+
         ema_G.restore()
         ema_D.restore()
