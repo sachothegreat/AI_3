@@ -308,15 +308,15 @@ if __name__ == "__main__":
                 img_grid = torch.clamp(torch.cat((imgs_lr, gen_hr, imgs_hr), -1), min=0, max=1)
                 save_image(img_grid, 'images/training/%d.png' % batches_done, nrow=1, normalize=False)
 
-        # Save model and EMA weights at the end of each epoch
-        ema_G.apply_shadow()
-        ema_D.apply_shadow()
+    # Save model and EMA weights at the end of training
+    ema_G.apply_shadow()
+    ema_D.apply_shadow()
 
-        # Save generator and discriminator models as sachi.pth
-        torch.save({
-            'generator': generator.state_dict(),
-            'discriminator': discriminator.state_dict()
-        }, '/Users/sachinrao/complex_proj/sachi.pth')
+    # Save generator and discriminator models as sachi.pth in saved_models directory after all epochs
+    torch.save({
+        'generator': generator.state_dict(),
+        'discriminator': discriminator.state_dict()
+    }, 'saved_models/sachi.pth')
 
-        ema_G.restore()
-        ema_D.restore()
+    ema_G.restore()
+    ema_D.restore()
