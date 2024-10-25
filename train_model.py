@@ -181,10 +181,11 @@ if __name__ == "__main__":
 
     # Argument Parsing for dynamic hyperparameters
     parser = argparse.ArgumentParser()
+    parser.add_argument('--epochs', default=850, type=int, help='number of epochs for training')  # Added epochs
     parser.add_argument('--crop_size', default=256, type=int, help='training images crop size')
     parser.add_argument('--upscale_factor', default=4, type=int, help='super resolution upscale factor')
     parser.add_argument('--batch_size', default=48, type=int, help='batch size of train dataset')
-    parser.add_argument('--n_batches', default=850, type=int, help='number of batches of training')  # 850 iterations
+    parser.add_argument('--n_batches', default=200, type=int, help='number of batches per epoch')  # Specify batches per epoch
     parser.add_argument('--residual_blocks', default=23, type=int, help='number of residual blocks in the generator')
     parser.add_argument('--batch', default=0, type=int, help='batch to start training from')
     parser.add_argument('--lr', default=0.0002, type=float, help='adam: learning rate')
@@ -214,8 +215,8 @@ if __name__ == "__main__":
 
     # Load models if resuming training
     if opt.batch != 0:
-        generator.load_state_dict(torch.load('saved_models/generator.pth'))
-        discriminator.load_state_dict(torch.load('saved_models/discriminator.pth'))
+        generator.load_state_dict(torch.load('saved_models/generator_%d.pth' % opt.batch))
+        discriminator.load_state_dict(torch.load('saved_models/discriminator_%d.pth' % opt.batch))
 
     # Optimizers
     optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr)
@@ -231,11 +232,10 @@ if __name__ == "__main__":
     train_set = TrainDatasetFromFolder('updated_low_res', crop_size=opt.crop_size, upscale_factor=opt.upscale_factor)
     train_loader = DataLoader(dataset=train_set, num_workers=0, batch_size=opt.batch_size, shuffle=True)  # Set num_workers=0
 
-    # Training loop
-    batch = opt.batch
-    while batch < opt.n_batches:
+    # Training loop with epochs
+    for epoch in range(opt.epochs):
         for i, (data, target) in enumerate(train_loader):
-            batches_done = batch + i
+            batches_done = i
 
             imgs_lr = data.to(device)
             imgs_hr = target.to(device)
@@ -300,7 +300,7 @@ if __name__ == "__main__":
             # Log Progress
             # -------------------------
 
-            print(f"[Iteration {batches_done}/{opt.n_batches}] [Batch {i}/{len(train_loader)}] [D loss: {loss_D.item():.6f}] [G loss: {loss_G.item():.6f}, content: {loss_content.item():.6f}, adv: {loss_GAN.item():.6f}, pixel: {loss_pixel.item():.6f}]")
+            print(f"[Epoch {epoch+1}/{opt.epochs}] [Batch {i}/{len(train_loader)}] [D loss: {loss_D.item():.6f}] [G loss: {loss_G.item():.6f}, content: {loss_content.item():.6f}, adv: {loss_GAN.item():.6f}, pixel: {loss_pixel.item():.6f}]")
 
             # Save image samples every opt.sample_interval iterations
             if batches_done % opt.sample_interval == 0:
@@ -308,6 +308,10 @@ if __name__ == "__main__":
                 img_grid = torch.clamp(torch.cat((imgs_lr, gen_hr, imgs_hr), -1), min=0, max=1)
                 save_image(img_grid, 'images/training/%d.png' % batches_done, nrow=1, normalize=False)
 
-        batch = batches_done + 1
-
-        # Skip saving model checkpoints to save disk space
+        # Save model and EMA weights
+        ema_G.apply_shadow()
+        ema_D.apply_shadow()
+        torch.save(generator.state_dict(), 'saved_models/generator.pth')
+        torch.save(discriminator.state_dict(), 'saved_models/discriminator.pth')
+        ema_G.restore()
+        ema_D.restore()
