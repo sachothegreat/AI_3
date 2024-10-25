@@ -11,6 +11,7 @@ from dataset import load_image_pairs, TrainDatasetFromFolder
 
 # Create necessary directories
 os.makedirs('images/training', exist_ok=True)
+os.makedirs('saved_models', exist_ok=True)  # Ensure the saved_models directory exists
 
 # Exponential Moving Average (EMA) class
 class EMA():
@@ -215,8 +216,8 @@ if __name__ == "__main__":
 
     # Load models if resuming training
     if opt.batch != 0:
-        generator.load_state_dict(torch.load('saved_models/generator_%d.pth' % opt.batch))
-        discriminator.load_state_dict(torch.load('saved_models/discriminator_%d.pth' % opt.batch))
+        generator.load_state_dict(torch.load('saved_models/generator.pth'))
+        discriminator.load_state_dict(torch.load('saved_models/discriminator.pth'))
 
     # Optimizers
     optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr)
@@ -230,7 +231,7 @@ if __name__ == "__main__":
 
     # Prepare dataset
     train_set = TrainDatasetFromFolder('updated_low_res', crop_size=opt.crop_size, upscale_factor=opt.upscale_factor)
-    train_loader = DataLoader(dataset=train_set, num_workers=0, batch_size=opt.batch_size, shuffle=True)  # Set num_workers=0
+    train_loader = DataLoader(dataset=train_set, num_workers=0, batch_size=opt.batch_size, shuffle=True)
 
     # Training loop with epochs
     for epoch in range(opt.epochs):
@@ -308,10 +309,10 @@ if __name__ == "__main__":
                 img_grid = torch.clamp(torch.cat((imgs_lr, gen_hr, imgs_hr), -1), min=0, max=1)
                 save_image(img_grid, 'images/training/%d.png' % batches_done, nrow=1, normalize=False)
 
-        # Save model and EMA weights
+        # Save model and EMA weights after each epoch
         ema_G.apply_shadow()
         ema_D.apply_shadow()
-        torch.save(generator.state_dict(), 'saved_models/generator.pth')
-        torch.save(discriminator.state_dict(), 'saved_models/discriminator.pth')
+        torch.save(generator.state_dict(), 'saved_models/generator.pth')  # Ensure saved_models exists
+        torch.save(discriminator.state_dict(), 'saved_models/discriminator.pth')  # Ensure saved_models exists
         ema_G.restore()
         ema_D.restore()
