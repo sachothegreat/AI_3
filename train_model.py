@@ -184,8 +184,7 @@ if __name__ == "__main__":
     parser.add_argument('--crop_size', default=256, type=int, help='training images crop size')
     parser.add_argument('--upscale_factor', default=4, type=int, help='super resolution upscale factor')
     parser.add_argument('--batch_size', default=48, type=int, help='batch size of train dataset')
-    parser.add_argument('--warmup_batches', default=1_000, type=int, help='number of batches with pixel-wise loss only')
-    parser.add_argument('--n_batches', default=1_000, type=int, help='number of batches of training')
+    parser.add_argument('--n_batches', default=850, type=int, help='number of batches of training')  # 850 iterations
     parser.add_argument('--residual_blocks', default=23, type=int, help='number of residual blocks in the generator')
     parser.add_argument('--batch', default=0, type=int, help='batch to start training from')
     parser.add_argument('--lr', default=0.0002, type=float, help='adam: learning rate')
@@ -215,8 +214,8 @@ if __name__ == "__main__":
 
     # Load models if resuming training
     if opt.batch != 0:
-        generator.load_state_dict(torch.load('saved_models/generator_%d.pth' % opt.batch))
-        discriminator.load_state_dict(torch.load('saved_models/discriminator_%d.pth' % opt.batch))
+        generator.load_state_dict(torch.load('saved_models/generator.pth'))
+        discriminator.load_state_dict(torch.load('saved_models/discriminator.pth'))
 
     # Optimizers
     optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr)
@@ -254,16 +253,6 @@ if __name__ == "__main__":
 
             # Pixel-wise loss (L1 loss)
             loss_pixel = criterion_pixel(gen_hr, imgs_hr)
-
-            # Warmup phase: Only train generator with pixel loss
-            if batches_done < opt.warmup_batches:
-                loss_pixel.backward()
-                optimizer_G.step()
-                ema_G.update()
-                print(f"[Warmup] [Iteration {batches_done}/{opt.n_batches}] [Batch {i}/{len(train_loader)}] [G pixel: {loss_pixel.item():.6f}]")
-                continue
-            elif batches_done == opt.warmup_batches:
-                optimizer_G = torch.optim.Adam(generator.parameters(), lr=1e-4)
 
             # GAN Loss
             pred_real = discriminator(imgs_hr).detach()
