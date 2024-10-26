@@ -1,16 +1,17 @@
+import argparse
+import os
 import torch
+import torch.nn.functional as F  # Import torch.nn.functional for F.interpolate and F.leaky_relu
+from torch.utils.data import DataLoader
 from torch import nn
 from torchvision.models import vgg19
 from torch.nn.utils import spectral_norm
-import torch.nn.functional as F
-from dataset import load_image_pairs  # Ensure this is correctly imported from your dataset.py
-from utils import save_model, display_training_progress, EarlyStopping  # Import from utils.py
-from PIL import Image
-import os
+from torchvision.utils import save_image
+from dataset import load_image_pairs, TrainDatasetFromFolder
 
-# Set directory path in the local AI_3 directory for saving models
-save_dir = '/content/AI_3/'
-os.makedirs(save_dir, exist_ok=True)  # Create the directory if it doesn't exist
+# Create necessary directories
+os.makedirs('saved_models', exist_ok=True)
+os.makedirs('images/training', exist_ok=True)
 
 # Exponential Moving Average (EMA) class
 class EMA():
@@ -50,63 +51,81 @@ class EMA():
                 param.data = self.backup[name]
         self.backup = {}
 
-# UNet-like Generator model (ESRGAN)
-class GeneratorUNetLike(nn.Module):
-    def __init__(self, num_residual_blocks=16):
-        super(GeneratorUNetLike, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=9, stride=1, padding=4)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.leaky_relu = nn.LeakyReLU(0.2)
+# RRDB-Based Generator (Residual in Residual Dense Block)
+class DenseResidualBlock(nn.Module):
+    def __init__(self, filters, res_scale=0.2):
+        super(DenseResidualBlock, self).__init__()
+        self.res_scale = res_scale
 
-        # Residual blocks (encoder)
-        self.residual_blocks = nn.Sequential(
-            *[ResidualBlock(64) for _ in range(num_residual_blocks)]
+        def block(in_features, non_linearity=True):
+            layers = [nn.Conv2d(in_features, filters, 3, 1, 1, bias=True)]
+            if non_linearity:
+                layers += [nn.LeakyReLU(negative_slope=0.2, inplace=True)]  # Corrected to nn.LeakyReLU
+            return nn.Sequential(*layers)
+
+        self.b1 = block(filters)
+        self.b2 = block(2 * filters)
+        self.b3 = block(3 * filters)
+        self.b4 = block(4 * filters)
+        self.b5 = block(5 * filters, non_linearity=False)
+
+    def forward(self, x):
+        inputs = x
+        out1 = self.b1(inputs)
+        out2 = self.b2(torch.cat([inputs, out1], 1))
+        out3 = self.b3(torch.cat([inputs, out1, out2], 1))
+        out4 = self.b4(torch.cat([inputs, out1, out2, out3], 1))
+        out5 = self.b5(torch.cat([inputs, out1, out2, out3, out4], 1))
+        return out5.mul(self.res_scale) + x
+
+class ResidualInResidualDenseBlock(nn.Module):
+    def __init__(self, filters, res_scale=0.2):
+        super(ResidualInResidualDenseBlock, self).__init__()
+        self.res_scale = res_scale
+        self.dense_blocks = nn.Sequential(
+            DenseResidualBlock(filters), DenseResidualBlock(filters), DenseResidualBlock(filters)
         )
 
-        # Upsampling layers with intermediate conv layers and skip connections
-        self.upsample1 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
-        self.refine1 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)  # Conv layer after upsampling
-        self.upsample2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
-        self.refine2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)  # Conv layer after upsampling
-
-        # Final output layer
-        self.conv2 = nn.Conv2d(64, 3, kernel_size=9, stride=1, padding=4)
-
     def forward(self, x):
-        # Encoder
-        x1 = self.leaky_relu(self.bn1(self.conv1(x)))
-        x_res = self.residual_blocks(x1)
+        return self.dense_blocks(x).mul(self.res_scale) + x
 
-        # Upsampling + refinement (UNet-style)
-        x_upsample1 = F.interpolate(x_res, scale_factor=2, mode='bilinear', align_corners=False)
-        x_upsample1 = self.leaky_relu(self.upsample1(x_upsample1))
-        x_upsample1 = self.leaky_relu(self.refine1(x_upsample1))  # Refine upsampled output
+class GeneratorRRDB(nn.Module):
+    def __init__(self, channels, filters=64, num_res_blocks=16, num_upsample=2):
+        super(GeneratorRRDB, self).__init__()
+        # First convolutional layer
+        self.conv1 = nn.Conv2d(channels, filters, kernel_size=3, stride=1, padding=1)
 
-        x_upsample2 = F.interpolate(x_upsample1, scale_factor=2, mode='bilinear', align_corners=False)
-        x_upsample2 = self.leaky_relu(self.upsample2(x_upsample2))
-        x_upsample2 = self.leaky_relu(self.refine2(x_upsample2))  # Refine again after upsampling
+        # RRDB Blocks
+        self.res_blocks = nn.Sequential(*[ResidualInResidualDenseBlock(filters) for _ in range(num_res_blocks)])
 
-        # Final output
-        x_final = torch.sigmoid(self.conv2(x_upsample2))
-        return x_final
-
-# Residual Block for Generator
-class ResidualBlock(nn.Module):
-    def __init__(self, filters=64):
-        super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
-        self.bn1 = nn.BatchNorm2d(filters)
-        self.leaky_relu = nn.LeakyReLU(0.2)
-        self.dropout = nn.Dropout(0.3)
+        # Second convolutional layer
         self.conv2 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(filters)
+
+        # Upsampling layers
+        upsample_layers = []
+        for _ in range(num_upsample):
+            upsample_layers += [
+                nn.Conv2d(filters, filters * 4, kernel_size=3, stride=1, padding=1),
+                nn.LeakyReLU(negative_slope=0.2, inplace=True),
+                nn.PixelShuffle(upscale_factor=2)
+            ]
+        self.upsampling = nn.Sequential(*upsample_layers)
+
+        # Final output block
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(negative_slope=0.2, inplace=True),
+            nn.Conv2d(filters, channels, kernel_size=3, stride=1, padding=1)
+        )
 
     def forward(self, x):
-        residual = x
-        x = self.leaky_relu(self.bn1(self.conv1(x)))
-        x = self.dropout(x)
-        x = self.bn2(self.conv2(x))
-        return x + residual
+        out1 = self.conv1(x)
+        out = self.res_blocks(out1)
+        out2 = self.conv2(out)
+        out = torch.add(out1, out2)
+        out = self.upsampling(out)
+        out = self.conv3(out)
+        return out
 
 # UNet-based Discriminator with Spectral Normalization (SN)
 class UNetDiscriminatorSN(nn.Module):
@@ -159,122 +178,145 @@ class UNetDiscriminatorSN(nn.Module):
 
         return out
 
-# VGG model for perceptual loss calculation
-class VGGFeatureExtractor(nn.Module):
-    def __init__(self):
-        super(VGGFeatureExtractor, self).__init__()
-        vgg = vgg19(weights='IMAGENET1K_V1')  # Updated to use correct weights
-        feature_layers = ['features.0', 'features.5', 'features.10', 'features.19', 'features.28']
-        self.features = nn.ModuleList([vgg.features[int(layer.split('.')[1])] for layer in feature_layers])
-
-    def forward(self, x):
-        outputs = []
-        for layer in self.features:
-            x = layer(x)
-            outputs.append(x)
-        return outputs
-
-# Perceptual loss function using VGG with weights {0.1, 0.1, 1, 1, 1}
-def compute_perceptual_loss(vgg, y_true, y_pred):
-    feature_weights = [0.1, 0.1, 1, 1, 1]
-    loss = 0.0
-
-    y_true_features = vgg(y_true)
-    y_pred_features = vgg(y_pred)
-
-    for i, weight in enumerate(feature_weights):
-        loss += weight * nn.functional.mse_loss(y_pred_features[i], y_true_features[i])
-
-    return loss
-
-# Training step with generator and discriminator
-def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen_optimizer, disc_optimizer, ema):
-    generator.train()
-    discriminator.train()
-
-    # Move data to GPU (if available)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    low_res_image = low_res_image.to(device)
-    high_res_image = high_res_image.to(device)
-
-    # Generator forward pass
-    generated_image = generator(low_res_image)
-
-    # Discriminator forward pass
-    real_output = discriminator(high_res_image)
-    fake_output = discriminator(generated_image.detach())
-
-    # Compute perceptual loss
-    perceptual_loss = compute_perceptual_loss(vgg, high_res_image, generated_image)
-
-    # Adversarial loss (BCE loss)
-    adversarial_loss_real = nn.BCEWithLogitsLoss()(real_output, torch.ones_like(real_output))
-    adversarial_loss_fake = nn.BCEWithLogitsLoss()(fake_output, torch.zeros_like(fake_output))
-    adversarial_loss = (adversarial_loss_real + adversarial_loss_fake) / 2
-
-    # Total generator loss
-    total_loss = perceptual_loss + adversarial_loss
-
-    # Backpropagation for generator
-    gen_optimizer.zero_grad()
-    total_loss.backward()
-    gen_optimizer.step()
-
-    # EMA update
-    ema.update()
-
-    return total_loss.item(), generated_image
-
-# Main training function with 850 epochs and updated datasets
-def train_model():
-    try:
-        # Build the generator, discriminator, and VGG models
-        generator = GeneratorUNetLike().cuda()
-        discriminator = UNetDiscriminatorSN(num_in_ch=3).cuda()
-        ema_generator = GeneratorUNetLike().cuda()  # EMA model for generator
-        vgg = VGGFeatureExtractor().cuda()
-
-        # Optimizers for generator and discriminator
-        gen_optimizer = torch.optim.Adam(generator.parameters(), lr=2e-4, betas=(0.9, 0.99))
-        disc_optimizer = torch.optim.Adam(discriminator.parameters(), lr=1e-4, betas=(0.9, 0.99))
-
-        # EMA for the generator
-        ema = EMA(generator, decay=0.999)
-        ema.register()
-
-        # Load dataset from updated directories
-        low_res_images, high_res_images = load_image_pairs('updated_low_res', 'updated_high_res', num_images=5)
-
-        # Ensure directories exist locally
-        os.makedirs('uploads', exist_ok=True)
-
-        # Training loop for 850 epochs
-        for epoch in range(850):
-            for i, (low_res_image, high_res_image) in enumerate(zip(low_res_images, high_res_images)):
-                low_res_image = torch.unsqueeze(low_res_image, 0)  # Add batch dimension
-                high_res_image = torch.unsqueeze(high_res_image, 0)
-
-                # Train the discriminator and generator
-                combined_loss, generated_image = train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen_optimizer, disc_optimizer, ema)
-
-                print(f"Epoch {epoch + 1}, Image {i + 1}/{len(low_res_images)} - Loss: {combined_loss:.6f}")
-
-                # Save the generated image locally to 'uploads'
-                generated_image_np = generated_image.squeeze(0).detach().cpu().numpy().transpose(1, 2, 0) * 255
-                generated_image_np = generated_image_np.clip(0, 255)
-                generated_image_pil = Image.fromarray(generated_image_np.astype('uint8'))
-                generated_image_pil.save(f"uploads/generated_image_epoch_{epoch + 1}_image_{i + 1}.jpg")
-
-                # Update EMA for the generator
-                ema.update()
-
-        # Apply EMA weights for the final generator model and save to the local directory
-        ema.apply_shadow()
-        torch.save(generator.state_dict(), f'{save_dir}/esrgan_final.pth')
-        print(f"Final model saved locally at {save_dir}/esrgan_final.pth")
-
-    except Exception as e:
-        print(f"Error during training: {str(e)}")
-
 if __name__ == "__main__":
-    train_model()
+
+    # Argument Parsing for dynamic hyperparameters
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--epochs', default=850, type=int, help='number of epochs of training')
+    parser.add_argument('--crop_size', default=256, type=int, help='training images crop size')
+    parser.add_argument('--upscale_factor', default=4, type=int, help='super resolution upscale factor')
+    parser.add_argument('--batch_size', default=48, type=int, help='batch size of train dataset')
+    parser.add_argument('--batch', default=0, type=int, help='batch to start training from')
+    parser.add_argument('--lr', default=0.0002, type=float, help='adam: learning rate')
+    parser.add_argument('--sample_interval', default=500, type=int, help='interval between saving image samples')
+    parser.add_argument('--residual_blocks', default=23, type=int, help='number of residual blocks in the generator')  # Add residual_blocks argument
+    opt = parser.parse_args()
+    print(opt)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+
+    # Initialize model parameters
+    hr_shape = (opt.crop_size, opt.crop_size)
+    channels = 3
+
+    # Initialize the Generator and Discriminator
+    generator = GeneratorRRDB(channels, num_res_blocks=opt.residual_blocks).to(device)
+    discriminator = UNetDiscriminatorSN(channels).to(device)
+
+    # Feature Extractor (VGG19) for perceptual loss
+    feature_extractor = vgg19(weights='IMAGENET1K_V1').features[:29].to(device)
+    feature_extractor.eval()  # Set VGG to eval mode
+
+    # Losses
+    criterion_GAN = torch.nn.BCEWithLogitsLoss().to(device)
+    criterion_content = torch.nn.L1Loss().to(device)
+    criterion_pixel = torch.nn.L1Loss().to(device)
+
+    # Load models if resuming training
+    if opt.batch != 0:
+        generator.load_state_dict(torch.load('saved_models/generator.pth'))
+        discriminator.load_state_dict(torch.load('saved_models/discriminator.pth'))
+
+    # Optimizers
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr)
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=1e-4)
+
+    # Initialize EMA for both generator and discriminator
+    ema_G = EMA(generator, 0.999)
+    ema_D = EMA(discriminator, 0.999)
+    ema_G.register()
+    ema_D.register()
+
+    # Prepare dataset
+    train_set = TrainDatasetFromFolder('updated_low_res', crop_size=opt.crop_size, upscale_factor=opt.upscale_factor)
+    train_loader = DataLoader(dataset=train_set, num_workers=0, batch_size=opt.batch_size, shuffle=True)
+
+    # Training loop
+    for epoch in range(opt.epochs):
+        for i, (data, target) in enumerate(train_loader):
+            batches_done = epoch * len(train_loader) + i
+
+            imgs_lr = data.to(device)
+            imgs_hr = target.to(device)
+
+            valid = torch.ones((imgs_lr.size(0), 1, *imgs_hr.shape[-2:]), requires_grad=False).to(device)
+            fake = torch.zeros((imgs_lr.size(0), 1, *imgs_hr.shape[-2:]), requires_grad=False).to(device)
+
+            # ---------------------
+            # Training Generator
+            # ---------------------
+
+            optimizer_G.zero_grad()
+
+            gen_hr = generator(imgs_lr)
+
+            # Pixel-wise loss (L1 loss)
+            loss_pixel = criterion_pixel(gen_hr, imgs_hr)
+
+            # GAN Loss
+            pred_real = discriminator(imgs_hr).detach()
+            pred_fake = discriminator(gen_hr)
+
+            # Relativistic GAN Loss
+            loss_GAN = (
+                               criterion_GAN(pred_fake - pred_real.mean(0, keepdim=True), valid) +
+                               criterion_GAN(pred_real - pred_fake.mean(0, keepdim=True), fake)
+                       ) / 2
+
+            # Perceptual Loss
+            gen_features = feature_extractor(gen_hr)
+            real_features = feature_extractor(imgs_hr)
+            real_features = [real_f.detach() for real_f in real_features]
+            loss_content = sum(criterion_content(gen_f, real_f) * w for gen_f, real_f, w in zip(gen_features, real_features, [0.1, 0.1, 1, 1, 1]))
+
+            # Total Generator Loss: Pixel loss + Perceptual loss + GAN loss
+            loss_G = loss_content + 0.1 * loss_GAN + loss_pixel
+
+            loss_G.backward()
+            optimizer_G.step()
+            ema_G.update()
+
+            # ---------------------
+            # Train Discriminator
+            # ---------------------
+
+            optimizer_D.zero_grad()
+
+            pred_real = discriminator(imgs_hr)
+            pred_fake = discriminator(gen_hr.detach())
+
+            # Relativistic GAN Loss for Discriminator
+            loss_real = criterion_GAN(pred_real - pred_fake.mean(0, keepdim=True), valid)
+            loss_fake = criterion_GAN(pred_fake - pred_real.mean(0, keepdim=True), fake)
+
+            loss_D = (loss_real + loss_fake) / 2
+
+            loss_D.backward()
+            optimizer_D.step()
+            ema_D.update()
+
+            # -------------------------
+            # Log Progress
+            # -------------------------
+
+            print(f"[Epoch {epoch + 1}/{opt.epochs}] [Batch {i}/{len(train_loader)}] [D loss: {loss_D.item():.6f}] [G loss: {loss_G.item():.6f}, content: {loss_content.item():.6f}, adv: {loss_GAN.item():.6f}, pixel: {loss_pixel.item():.6f}]")
+
+            # Save image samples every opt.sample_interval iterations
+            if batches_done % opt.sample_interval == 0:
+                imgs_lr = F.interpolate(imgs_lr, scale_factor=4, mode='bicubic')
+                img_grid = torch.clamp(torch.cat((imgs_lr, gen_hr, imgs_hr), -1), min=0, max=1)
+                save_image(img_grid, 'images/training/%d.png' % batches_done, nrow=1, normalize=False)
+
+    # Save model and EMA weights at the end of training
+    ema_G.apply_shadow()
+    ema_D.apply_shadow()
+
+    # Save generator and discriminator models as sachi.pth in saved_models directory after all epochs
+    torch.save({
+        'generator': generator.state_dict(),
+        'discriminator': discriminator.state_dict()
+    }, 'saved_models/sachi.pth')
+
+    ema_G.restore()
+    ema_D.restore()
