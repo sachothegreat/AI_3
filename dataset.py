@@ -3,7 +3,7 @@ import torch
 from PIL import Image
 import numpy as np
 
-# Function to load and resize images, and apply sinh transformation
+# Function to load and resize images
 def load_image(image_path, target_size=None):
     if not os.path.exists(image_path):
         print(f"Error: The file '{image_path}' does not exist.")
@@ -13,9 +13,6 @@ def load_image(image_path, target_size=None):
         img = img.resize(target_size, Image.BICUBIC)  # Resize using bicubic interpolation
     img = np.array(img) / 255.0  # Normalize image to [0, 1]
     img = img * 2 - 1  # Rescale image from [0, 1] to [-1, 1]
-
-    # Apply sinh transformation
-    img = np.sinh(img)  # Apply sinh to input
     return torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)  # Convert to tensor and adjust dimensions
 
 # Function to load all image pairs (low and high res) for training
