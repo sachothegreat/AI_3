@@ -225,13 +225,12 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
 
     return total_loss.item(), generated_image
 
-# Main training function with 850 epochs and updated datasets
+# Main training function with 500 epochs and high_res/low_res directories
 def train_model():
     try:
         # Build the generator, discriminator, and VGG models
         generator = GeneratorUNetLike().cuda()
         discriminator = UNetDiscriminatorSN(num_in_ch=3).cuda()
-        ema_generator = GeneratorUNetLike().cuda()  # EMA model for generator
         vgg = VGGFeatureExtractor().cuda()
 
         # Optimizers for generator and discriminator
@@ -242,14 +241,11 @@ def train_model():
         ema = EMA(generator, decay=0.999)
         ema.register()
 
-        # Load dataset from updated directories
-        low_res_images, high_res_images = load_image_pairs('updated_low_res', 'updated_high_res', num_images=5)
+        # Load dataset from high_res and low_res directories
+        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=5)
 
-        # Ensure directories exist locally
-        os.makedirs('uploads', exist_ok=True)
-
-        # Training loop for 850 epochs
-        for epoch in range(850):
+        # Training loop for 500 epochs
+        for epoch in range(500):
             for i, (low_res_image, high_res_image) in enumerate(zip(low_res_images, high_res_images)):
                 low_res_image = torch.unsqueeze(low_res_image, 0)  # Add batch dimension
                 high_res_image = torch.unsqueeze(high_res_image, 0)
