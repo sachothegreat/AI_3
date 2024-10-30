@@ -242,7 +242,7 @@ def train_model():
         ema.register()
 
         # Load dataset from high_res and low_res directories
-        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=5)
+        low_res_images, high_res_images = load_image_pairs('low_res', 'high_res', num_images=854)
 
         # Training loop for 500 epochs
         for epoch in range(500):
