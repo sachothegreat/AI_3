@@ -5,7 +5,6 @@ from torch.nn.utils import spectral_norm
 import torch.nn.functional as F
 from dataset import load_image_pairs
 from utils import save_model, display_training_progress, EarlyStopping
-from PIL import Image
 import os
 
 # Set directory path in a writable location
@@ -150,7 +149,7 @@ class UNetDiscriminatorSN(nn.Module):
 class VGGFeatureExtractor(nn.Module):
     def __init__(self):
         super(VGGFeatureExtractor, self).__init__()
-        vgg = vgg19(weights='IMAGENET1K_V1')  # Updated to use correct weights
+        vgg = vgg19(weights='IMAGENET1K_V1')
         feature_layers = ['features.0', 'features.5', 'features.10', 'features.19', 'features.28']
         self.features = nn.ModuleList([vgg.features[int(layer.split('.')[1])] for layer in feature_layers])
 
@@ -210,7 +209,7 @@ def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen
     # EMA update
     ema.update()
 
-    return total_loss.item(), generated_image
+    return total_loss.item()
 
 # Load ESRGAN pretrained weights
 def load_pretrained_generator(generator, weights_path):
@@ -248,14 +247,8 @@ def train_model():
                 high_res_image = torch.unsqueeze(high_res_image, 0).cuda()
 
                 # Train step
-                combined_loss, generated_image = train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen_optimizer, disc_optimizer, ema)
+                combined_loss = train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen_optimizer, disc_optimizer, ema)
                 print(f"Epoch {epoch + 1}, Image {i + 1}/{len(low_res_images)} - Loss: {combined_loss:.6f}")
-
-                # Save generated images
-                generated_image_np = generated_image.squeeze(0).detach().cpu().numpy().transpose(1, 2, 0) * 255
-                generated_image_np = generated_image_np.clip(0, 255)
-                generated_image_pil = Image.fromarray(generated_image_np.astype('uint8'))
-                generated_image_pil.save(f"{save_dir}/uploads/generated_image_epoch_{epoch + 1}_image_{i + 1}.jpg")
 
                 # EMA update
                 ema.update()
