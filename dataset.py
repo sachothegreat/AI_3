@@ -8,11 +8,11 @@ def load_image(image_path, target_size=None):
     if not os.path.exists(image_path):
         print(f"Error: The file '{image_path}' does not exist.")
         return None
-    img = Image.open(image_path).convert('RGB')  # Convert to RGB mode
+    img = Image.open(image_path).convert('RGB')
     if target_size:
-        img = img.resize(target_size, Image.BICUBIC)  # Resize using bicubic interpolation
-    img = np.array(img) / 255.0  # Normalize image to [0, 1]
-    return torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)  # Convert to tensor and adjust dimensions
+        img = img.resize(target_size, Image.BICUBIC)
+    img = np.array(img) / 127.5 - 1  # Normalize to [-1, 1]
+    return torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)
 
 # Function to load all image pairs (low and high res) for training
 def load_image_pairs(low_res_dir, high_res_dir, num_images):
