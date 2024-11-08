@@ -146,6 +146,72 @@ class UNetDiscriminatorSN(nn.Module):
 
         return out
 
+# VGG model for perceptual loss calculation
+class VGGFeatureExtractor(nn.Module):
+    def __init__(self):
+        super(VGGFeatureExtractor, self).__init__()
+        vgg = vgg19(weights='IMAGENET1K_V1')  # Updated to use correct weights
+        feature_layers = ['features.0', 'features.5', 'features.10', 'features.19', 'features.28']
+        self.features = nn.ModuleList([vgg.features[int(layer.split('.')[1])] for layer in feature_layers])
+
+    def forward(self, x):
+        outputs = []
+        for layer in self.features:
+            x = layer(x)
+            outputs.append(x)
+        return outputs
+
+# Perceptual loss function using VGG with weights {0.1, 0.1, 1, 1, 1}
+def compute_perceptual_loss(vgg, y_true, y_pred):
+    feature_weights = [0.1, 0.1, 1, 1, 1]
+    loss = 0.0
+
+    y_true_features = vgg(y_true)
+    y_pred_features = vgg(y_pred)
+
+    for i, weight in enumerate(feature_weights):
+        loss += weight * nn.functional.mse_loss(y_pred_features[i], y_true_features[i])
+
+    return loss
+
+# Training step with generator and discriminator
+def train_step(generator, discriminator, vgg, low_res_image, high_res_image, gen_optimizer, disc_optimizer, ema):
+    generator.train()
+    discriminator.train()
+
+    # Move data to GPU (if available)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    low_res_image = low_res_image.to(device)
+    high_res_image = high_res_image.to(device)
+
+    # Generator forward pass
+    generated_image = generator(low_res_image)
+
+    # Discriminator forward pass
+    real_output = discriminator(high_res_image)
+    fake_output = discriminator(generated_image.detach())
+
+    # Compute perceptual loss
+    perceptual_loss = compute_perceptual_loss(vgg, high_res_image, generated_image)
+
+    # Adversarial loss (BCE loss)
+    adversarial_loss_real = nn.BCEWithLogitsLoss()(real_output, torch.ones_like(real_output))
+    adversarial_loss_fake = nn.BCEWithLogitsLoss()(fake_output, torch.zeros_like(fake_output))
+    adversarial_loss = (adversarial_loss_real + adversarial_loss_fake) / 2
+
+    # Total generator loss
+    total_loss = perceptual_loss + adversarial_loss
+
+    # Backpropagation for generator
+    gen_optimizer.zero_grad()
+    total_loss.backward()
+    gen_optimizer.step()
+
+    # EMA update
+    ema.update()
+
+    return total_loss.item(), generated_image
+
 # Load ESRGAN pretrained weights
 def load_pretrained_generator(generator, weights_path):
     if os.path.exists(weights_path):
