@@ -3,14 +3,14 @@ from torch import nn
 from torchvision.models import vgg19
 from torch.nn.utils import spectral_norm
 import torch.nn.functional as F
-from dataset import load_image_pairs  # Ensure this is correctly imported from your dataset.py
-from utils import save_model, display_training_progress, EarlyStopping  # Import from utils.py
+from dataset import load_image_pairs
+from utils import save_model, display_training_progress, EarlyStopping
 from PIL import Image
 import os
 
-# Set directory path in a writable location on your local machine
+# Set directory path in a writable location
 save_dir = '/Users/sachinrao/complex_proj/AI_3/'
-os.makedirs(save_dir, exist_ok=True)  # Create the directory if it doesn't exist
+os.makedirs(save_dir, exist_ok=True)
 
 # Exponential Moving Average (EMA) class
 class EMA():
@@ -95,6 +95,56 @@ class ResidualDenseBlock(nn.Module):
 
     def forward(self, x):
         return self.layers(x) + x
+
+# UNet-based Discriminator with Spectral Normalization (SN)
+class UNetDiscriminatorSN(nn.Module):
+    def __init__(self, num_in_ch, num_feat=64, skip_connection=True):
+        super().__init__()
+        norm = spectral_norm
+        self.skip_connection = skip_connection
+        self.conv0 = nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1)
+
+        # Downsample layers
+        self.conv1 = norm(nn.Conv2d(num_feat, num_feat * 2, 4, 2, 1, bias=False))
+        self.conv2 = norm(nn.Conv2d(num_feat * 2, num_feat * 4, 4, 2, 1, bias=False))
+        self.conv3 = norm(nn.Conv2d(num_feat * 4, num_feat * 8, 4, 2, 1, bias=False))
+
+        # Upsample layers
+        self.conv4 = norm(nn.Conv2d(num_feat * 8, num_feat * 4, 3, 1, 1, bias=False))
+        self.conv5 = norm(nn.Conv2d(num_feat * 4, num_feat * 2, 3, 1, 1, bias=False))
+        self.conv6 = norm(nn.Conv2d(num_feat * 2, num_feat, 3, 1, 1, bias=False))
+
+        # Extra convolutions
+        self.conv7 = norm(nn.Conv2d(num_feat, num_feat, 3, 1, 1, bias=False))
+        self.conv8 = norm(nn.Conv2d(num_feat, num_feat, 3, 1, 1, bias=False))
+        self.conv9 = nn.Conv2d(num_feat, 1, 3, 1, 1)
+
+    def forward(self, x):
+        x0 = F.leaky_relu(self.conv0(x), negative_slope=0.2, inplace=True)
+        x1 = F.leaky_relu(self.conv1(x0), negative_slope=0.2, inplace=True)
+        x2 = F.leaky_relu(self.conv2(x1), negative_slope=0.2, inplace=True)
+        x3 = F.leaky_relu(self.conv3(x2), negative_slope=0.2, inplace=True)
+
+        # Upsample with skip connections
+        x3 = F.interpolate(x3, scale_factor=2, mode='bilinear', align_corners=False)
+        x4 = F.leaky_relu(self.conv4(x3), negative_slope=0.2, inplace=True)
+        if self.skip_connection:
+            x4 = x4 + x2
+        x4 = F.interpolate(x4, scale_factor=2, mode='bilinear', align_corners=False)
+        x5 = F.leaky_relu(self.conv5(x4), negative_slope=0.2, inplace=True)
+        if self.skip_connection:
+            x5 = x5 + x1
+        x5 = F.interpolate(x5, scale_factor=2, mode='bilinear', align_corners=False)
+        x6 = F.leaky_relu(self.conv6(x5), negative_slope=0.2, inplace=True)
+        if self.skip_connection:
+            x6 = x6 + x0
+
+        # Final convolutions
+        out = F.leaky_relu(self.conv7(x6), negative_slope=0.2, inplace=True)
+        out = F.leaky_relu(self.conv8(out), negative_slope=0.2, inplace=True)
+        out = self.conv9(out)
+
+        return out
 
 # Load ESRGAN pretrained weights
 def load_pretrained_generator(generator, weights_path):
