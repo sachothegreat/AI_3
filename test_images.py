@@ -1,7 +1,7 @@
 import torch
 from PIL import Image
 import numpy as np
-from model import Generator
+from model import GeneratorRRDB  # Update import to GeneratorRRDB
 
 # Function to load a single test image
 def load_test_image(image_path, target_size=(128, 128)):
@@ -12,19 +12,23 @@ def load_test_image(image_path, target_size=(128, 128)):
 
 # Function to test the generator on a new image
 def test_generator(generator_path, image_path, output_path):
-    generator = Generator()
-    generator.load_state_dict(torch.load(generator_path))
+    # Initialize GeneratorRRDB model
+    generator = GeneratorRRDB()  # Use GeneratorRRDB
+    generator.load_state_dict(torch.load(generator_path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu')))
     generator.eval()  # Set to evaluation mode
 
     # Load test image
     low_res_image = load_test_image(image_path)
+    if torch.cuda.is_available():
+        generator = generator.cuda()
+        low_res_image = low_res_image.cuda()
 
     # Generate high-res image
     with torch.no_grad():
         high_res_image = generator(low_res_image)
 
     # Convert tensor to image and save
-    high_res_image = high_res_image.squeeze(0).permute(1, 2, 0).numpy() * 255.0  # Remove batch and channel dim
+    high_res_image = high_res_image.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255.0  # Remove batch and channel dim
     high_res_image = np.clip(high_res_image, 0, 255).astype(np.uint8)
     result_img = Image.fromarray(high_res_image)
     result_img.save(output_path)
