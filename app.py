@@ -1,47 +1,48 @@
-import cv2
+import argparse
+import torch
 import os
-from basicsr.archs.rrdbnet_arch import RRDBNet
 from realesrgan import RealESRGANer
+from basicsr.archs.rrdbnet_arch import RRDBNet
 
-def load_pretrained_model(model_path, scale=4):
-    """
-    Load the Real-ESRGAN pretrained model.
-    """
-    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=scale)
-    return RealESRGANer(
-        scale=scale,
+# Function to load a pre-trained model
+def load_pretrained_model(model_path):
+    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+    upsampler = RealESRGANer(
+        scale=4,
         model_path=model_path,
         model=model,
-        tile=0,  # Disable tile processing for large images
+        tile=0,
         tile_pad=10,
         pre_pad=0,
-        half=True if torch.cuda.is_available() else False,  # Use fp16 precision if CUDA is available
+        half=True if torch.cuda.is_available() else False  # Use fp16 precision if CUDA is available
     )
+    return upsampler
 
-def upscale_image(input_image_path, output_image_path, upsampler):
-    """
-    Upscale a single image using Real-ESRGAN.
-    """
-    img = cv2.imread(input_image_path, cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise FileNotFoundError(f"Input image not found: {input_image_path}")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input', type=str, required=True, help="Input directory containing low-resolution images")
+    parser.add_argument('--output', type=str, required=True, help="Output directory for high-resolution images")
+    parser.add_argument('--model_name', type=str, default="RealESRGAN_x4plus", help="Pre-trained model name")
+    parser.add_argument('--model_path', type=str, required=True, help="Path to the pre-trained model")
+    args = parser.parse_args()
 
-    try:
-        # Upscale the image
-        output, _ = upsampler.enhance(img, outscale=4)
-        cv2.imwrite(output_image_path, output)
-        print(f"Upscaled image saved to: {output_image_path}")
-    except RuntimeError as e:
-        print(f"Error during upscaling: {e}")
+    # Load the upsampler
+    upsampler = load_pretrained_model(args.model_path)
+
+    # Ensure the output directory exists
+    os.makedirs(args.output, exist_ok=True)
+
+    # Process images in the input directory
+    for img_name in os.listdir(args.input):
+        img_path = os.path.join(args.input, img_name)
+        output_path = os.path.join(args.output, f"upscaled_{img_name}")
+        if os.path.isfile(img_path):
+            try:
+                _, _, upscaled_img = upsampler.enhance(img_path)
+                upsampler.save_image(upscaled_img, output_path)
+                print(f"Processed {img_name} -> {output_path}")
+            except RuntimeError as e:
+                print(f"Failed to process {img_name}: {str(e)}")
 
 if __name__ == "__main__":
-    # Define paths
-    model_path = "/content/AI_3/weights/RealESRGAN_x4plus.pth"  # Pre-trained model path
-    input_image_path = "/content/AI_3/low_res/600.png"  # Path to the low-res image
-    output_image_path = "/content/AI_3/high_res_output.png"  # Path to save the high-res output
-
-    # Load the Real-ESRGAN model
-    upsampler = load_pretrained_model(model_path)
-
-    # Perform image upscaling
-    upscale_image(input_image_path, output_image_path, upsampler)
+    main()
