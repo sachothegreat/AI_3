@@ -1,72 +1,47 @@
-import torch
-import torchvision.transforms as transforms
-from PIL import Image
-import matplotlib.pyplot as plt
-from model import GeneratorRRDB  # Ensure this matches the architecture
+import cv2
+import os
+from basicsr.archs.rrdbnet_arch import RRDBNet
+from realesrgan import RealESRGANer
 
-# Load the pre-trained model for inference
-def load_trained_model(model_path):
-    model = GeneratorRRDB()
-    model.load_state_dict(torch.load(model_path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu')))
-    model.eval()  # Set model to evaluation mode
-    return model
+def load_pretrained_model(model_path, scale=4):
+    """
+    Load the Real-ESRGAN pretrained model.
+    """
+    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=scale)
+    return RealESRGANer(
+        scale=scale,
+        model_path=model_path,
+        model=model,
+        tile=0,  # Disable tile processing for large images
+        tile_pad=10,
+        pre_pad=0,
+        half=True if torch.cuda.is_available() else False,  # Use fp16 precision if CUDA is available
+    )
 
-# Preprocess the input low-resolution image
-def preprocess_image(image_path, target_size=(128, 128)):
-    img = Image.open(image_path).convert('RGB')
-    img = img.resize(target_size, Image.BICUBIC)  # Resize to low-res size if needed
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Normalize to [-1, 1]
-    ])
-    img = transform(img).unsqueeze(0)  # Add batch dimension
-    return img
+def upscale_image(input_image_path, output_image_path, upsampler):
+    """
+    Upscale a single image using Real-ESRGAN.
+    """
+    img = cv2.imread(input_image_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise FileNotFoundError(f"Input image not found: {input_image_path}")
 
-# Postprocess the output high-resolution image
-def postprocess_image(tensor):
-    tensor = tensor.squeeze(0)  # Remove batch dimension
-    tensor = tensor.detach().cpu().clamp_(0, 1)  # Clamp to [0,1]
-    img = transforms.ToPILImage()(tensor)
-    return img
-
-# Run the inference
-def test_model(model_path, low_res_image_path, output_image_path):
-    # Load the model
-    generator = load_trained_model(model_path)
-
-    # Move model to GPU if available
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    generator = generator.to(device)
-
-    # Load and preprocess the low-resolution image
-    low_res_img = preprocess_image(low_res_image_path)
-    low_res_img = low_res_img.to(device)
-
-    # Perform super-resolution
-    with torch.no_grad():
-        high_res_img_tensor = generator(low_res_img)
-
-    # Postprocess and save the high-resolution image
-    high_res_img = postprocess_image(high_res_img_tensor)
-    high_res_img.save(output_image_path)
-    print(f"Super-resolved image saved at: {output_image_path}")
-
-    # Display the images
-    low_res_img_pil = Image.open(low_res_image_path).convert('RGB')
-    plt.figure(figsize=(10, 5))
-    plt.subplot(1, 2, 1)
-    plt.title("Low Resolution")
-    plt.imshow(low_res_img_pil)
-
-    plt.subplot(1, 2, 2)
-    plt.title("Super Resolution")
-    plt.imshow(high_res_img)
-    plt.show()
+    try:
+        # Upscale the image
+        output, _ = upsampler.enhance(img, outscale=4)
+        cv2.imwrite(output_image_path, output)
+        print(f"Upscaled image saved to: {output_image_path}")
+    except RuntimeError as e:
+        print(f"Error during upscaling: {e}")
 
 if __name__ == "__main__":
-    # Paths for the model and images
-    model_path = "./weights/RealESRGAN_x4plus.pth"  # Update path to the Real-ESRGAN weights
-    low_res_image_path = "./test_images/low_res_image.png"  # Path to low-res image
-    output_image_path = "./test_images/high_res_output.png"  # Path to save high-res output
+    # Define paths
+    model_path = "/content/AI_3/weights/RealESRGAN_x4plus.pth"  # Pre-trained model path
+    input_image_path = "/content/AI_3/low_res/600.png"  # Path to the low-res image
+    output_image_path = "/content/AI_3/high_res_output.png"  # Path to save the high-res output
 
-    test_model(model_path, low_res_image_path, output_image_path)
+    # Load the Real-ESRGAN model
+    upsampler = load_pretrained_model(model_path)
+
+    # Perform image upscaling
+    upscale_image(input_image_path, output_image_path, upsampler)
