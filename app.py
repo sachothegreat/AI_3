@@ -1,19 +1,26 @@
+import argparse
 import os
 import cv2
-import argparse
 import torch
 from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
 
 
-def load_pretrained_model(model_path, scale):
-    """Initialize RealESRGAN with the pretrained model."""
-    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=scale)
+def load_pretrained_model(model_path, scale=4):
+    """Load the pretrained Real-ESRGAN model."""
+    model = RRDBNet(
+        num_in_ch=3,
+        num_out_ch=3,
+        num_feat=64,
+        num_block=23,
+        num_grow_ch=32,
+        scale=scale
+    )
     upsampler = RealESRGANer(
         scale=scale,
         model_path=model_path,
         model=model,
-        tile=0,  # No tiling
+        tile=0,  # no tile
         tile_pad=10,
         pre_pad=0,
         half=True if torch.cuda.is_available() else False,  # Use fp16 precision if CUDA is available
@@ -21,57 +28,53 @@ def load_pretrained_model(model_path, scale):
     return upsampler
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="Real-ESRGAN Inference Script")
+    parser.add_argument("--input", type=str, required=True, help="Path to the input directory")
+    parser.add_argument("--output", type=str, required=True, help="Path to the output directory")
+    parser.add_argument("--model_name", type=str, required=True, help="Name of the model")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the pretrained model")
+    parser.add_argument("--scale", type=int, default=4, help="Upscaling scale")
+    parser.add_argument("--face_enhance", action="store_true", help="Enable face enhancement")
+    return parser.parse_args()
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Image Upscaling using Real-ESRGAN")
-    parser.add_argument('--input', type=str, required=True, help="Path to input image or directory")
-    parser.add_argument('--output', type=str, required=True, help="Path to save the output images")
-    parser.add_argument('--model_name', type=str, default='RealESRGAN_x4plus', help="Model name (e.g., RealESRGAN_x4plus)")
-    parser.add_argument('--model_path', type=str, required=True, help="Path to the pretrained model weights")
-    args = parser.parse_args()
-
-    # Check if input is a file or directory
-    input_path = args.input
+    """Main function for Real-ESRGAN inference."""
+    args = parse_args()
+    input_dir = args.input
     output_dir = args.output
-    model_path = args.model_path
-    model_name = args.model_name
-
-    # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
-    # Determine scale based on model name
-    scale = 4 if 'x4' in model_name else 2
+    print("Loading pretrained model...")
+    upsampler = load_pretrained_model(args.model_path, args.scale)
+    print("Model loaded successfully.")
 
-    # Load Real-ESRGAN model
-    upsampler = load_pretrained_model(model_path, scale)
-
-    # Get list of input images
-    if os.path.isdir(input_path):
-        input_images = [os.path.join(input_path, f) for f in os.listdir(input_path) if f.lower().endswith(('png', 'jpg', 'jpeg'))]
-    else:
-        input_images = [input_path]
-
-    # Process each image
-    for img_path in input_images:
+    for img_name in os.listdir(input_dir):
+        img_path = os.path.join(input_dir, img_name)
+        if not os.path.isfile(img_path):
+            continue
         print(f"Processing: {img_path}")
 
-        # Load the image using OpenCV
-        img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-
+        img = cv2.imread(img_path, cv2.IMREAD_COLOR)
         if img is None:
-            print(f"Error: Could not load image {img_path}")
+            print(f"Skipping invalid image: {img_path}")
             continue
 
         try:
-            # Enhance the image using Real-ESRGAN
-            _, _, upscaled_img = upsampler.enhance(img)
-        except RuntimeError as error:
-            print(f"Error processing {img_path}: {error}")
+            if args.face_enhance:
+                _, _, upscaled_img = upsampler.enhance(img)
+            else:
+                upscaled_img, _ = upsampler.enhance(img)
+        except RuntimeError as e:
+            print(f"Error processing {img_path}: {e}")
+            print("Try reducing the image size or using a smaller tile size.")
             continue
 
-        # Save the upscaled image
-        output_path = os.path.join(output_dir, os.path.basename(img_path))
+        output_path = os.path.join(output_dir, f"upscaled_{img_name}")
         cv2.imwrite(output_path, upscaled_img)
-        print(f"Upscaled image saved to {output_path}")
+        print(f"Saved: {output_path}")
 
 
 if __name__ == "__main__":
