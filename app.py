@@ -1,6 +1,7 @@
 import os
 import cv2
 import argparse
+import torch
 from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
 
