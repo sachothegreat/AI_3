@@ -8,7 +8,12 @@ This is a Github repository for ESRGAN. I loaded pretrained weights from https:/
         !pip install -r requirements.txt
         !python setup.py develop
 7.	!wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P weights
-8.	!zip -r /content/AI_3_results.zip /content/AI_3/results
+8.	!python /content/AI_3/app.py \
+    --input "/content/AI_3/low_res/" \
+    --output "/content/AI_3/results/" \
+    --model_name "RealESRGAN_x4plus" \
+    --model_path "/content/Real-ESRGAN/weights/RealESRGAN_x4plus.pth"
+9.	!zip -r /content/AI_3_results.zip /content/AI_3/results
 
 Acknowledgments
 This project utilizes resources from the following:
