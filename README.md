@@ -1,4 +1,4 @@
-ESRGAN
+
 This is a Github repository for ESRGAN. I loaded pretrained weights from https://github.com/xinntao/Real-ESRGAN and implemented it. I do have a self trained model as well but it is only to be used for images with no darkness. Load all the required images for training and use the following commands in order to get super resolution images on google colab: 
 1.	!git clone https://{token}@github.com/sachothegreat/AI_3.git
 2.	from getpass import getpass token = getpass('authentication token’)
