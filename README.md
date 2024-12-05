@@ -15,7 +15,7 @@ This is a Github repository for ESRGAN. I loaded pretrained weights from https:/
     --model_path "/content/Real-ESRGAN/weights/RealESRGAN_x4plus.pth"
 9.	!zip -r /content/AI_3_results.zip /content/AI_3/results
 
-Acknowledgments
+Acknowledgments:
 This project utilizes resources from the following:
 
 1. Weights: The pre-trained weights are sourced from the Real-ESRGAN repository, licensed under the BSD 3-Clause License. For more details, refer to their license file: https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE.
